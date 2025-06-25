@@ -5,6 +5,8 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Layout from './components/Layout';
 import Dashboard from './components/Dashboard';
 import SocialMediaPage from './components/SocialMediaPage';
+import FacebookPage from './components/FacebookPage';
+import InstagramPage from './components/InstagramPage';
 import EmailPage from './components/EmailPage';
 import AdsPage from './components/AdsPage';
 import Login from './components/Login';
@@ -40,6 +42,8 @@ function AppContent() {
             </Layout>
           } />
           <Route path="/social-media" element={<SocialMediaPage />} />
+          <Route path="/facebook" element={<FacebookPage />} />
+          <Route path="/instagram" element={<InstagramPage />} />
           <Route path="/email" element={<EmailPage />} />
           <Route path="/ads" element={<AdsPage />} />
         </>

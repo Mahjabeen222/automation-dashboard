@@ -10,7 +10,7 @@ function Dashboard() {
       id: 1,
       title: 'Social Media Automation',
       description: 'Intelligent content scheduling and engagement automation across all social platforms',
-      path: '/social-media',
+      path: '/facebook',
       icon: (
         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
           <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
@@ -25,6 +25,23 @@ function Dashboard() {
     },
     {
       id: 2,
+      title: 'Instagram Automation',
+      description: 'Intelligent content scheduling and engagement automation across all social platforms',
+      path: '/instagram',
+      icon: (
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+          <circle cx="7" cy="8" r="1"/>
+          <circle cx="12" cy="8" r="1"/>
+          <circle cx="17" cy="8" r="1"/>
+          <path d="M5 11h14"/>
+        </svg>
+      ),
+    },
+    {
+      id: 3,
       title: 'Email Automation',
       description: 'Advanced email sequences with behavioral triggers and personalization engines',
       path: '/email',
@@ -36,7 +53,7 @@ function Dashboard() {
       ),
     },
     {
-      id: 3,
+      id: 4,
       title: 'Campaign Automation',
       description: 'AI-driven advertising optimization with real-time bidding and performance analytics',
       path: '/ads',
