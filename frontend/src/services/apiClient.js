@@ -35,17 +35,53 @@ class ApiClient {
     };
 
     try {
-      const response = await fetch(url, config);
+      console.log(`Making API request to: ${url}`);
+      
+      // Add timeout to fetch request
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+      
+      const response = await fetch(url, {
+        ...config,
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}`);
+        
+        // Handle 401 Unauthorized specifically
+        if (response.status === 401) {
+          console.warn('Authentication failed - token may be expired');
+          this.setToken(null); // Clear invalid token
+          throw new Error('Could not validate credentials - please log in again');
+        }
+        
+        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
       }
 
-      return await response.json();
+      const responseData = await response.json();
+      console.log(`API response from ${endpoint}:`, responseData);
+      return responseData;
     } catch (error) {
+      if (error.name === 'AbortError') {
+        console.error(`API request timeout for ${endpoint}`);
+        throw new Error('Request timed out - backend server may not be responding');
+      }
       console.error(`API Error (${endpoint}):`, error);
       throw error;
+    }
+  }
+
+  // Test connection to backend
+  async testConnection() {
+    try {
+      const response = await fetch(`${this.baseURL.replace('/api', '')}/health`);
+      return response.ok;
+    } catch (error) {
+      console.error('Backend connection test failed:', error);
+      return false;
     }
   }
 
@@ -139,6 +175,18 @@ class ApiClient {
     
     const query = params.toString();
     return this.request(`/social/automation-rules${query ? `?${query}` : ''}`);
+  }
+
+  // Generate content using Groq API
+  async generateContent(prompt) {
+    return this.request('/ai/generate-content', {
+      method: 'POST',
+      body: JSON.stringify({
+        prompt: prompt,
+        platform: 'facebook',
+        content_type: 'post'
+      }),
+    });
   }
 }
 

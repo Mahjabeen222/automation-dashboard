@@ -123,6 +123,10 @@ class FacebookPageInfo(BaseModel):
     category: str
     access_token: str
     can_post: bool = True
+    canPost: Optional[bool] = True  # Alternative naming from frontend
+    canComment: Optional[bool] = True
+    profilePicture: Optional[str] = None
+    followerCount: Optional[int] = 0
 
 
 class FacebookConnectRequest(BaseModel):

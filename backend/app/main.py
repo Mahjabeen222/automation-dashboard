@@ -43,9 +43,17 @@ async def startup_event():
     """Initialize the application."""
     logger.info("Starting Automation Dashboard API...")
     
-    # Create database tables
-    create_tables()
-    logger.info("Database tables created/verified")
+    try:
+        # Create database tables
+        create_tables()
+        logger.info("Database tables created/verified")
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
+        # Don't fail startup for database issues
+    
+    # Log registered routes for debugging
+    routes = [route.path for route in app.routes]
+    logger.info(f"Registered routes: {routes}")
     
     logger.info("Automation Dashboard API started successfully")
 
@@ -79,29 +87,62 @@ async def health_check():
     }
 
 
+# Test endpoint for debugging
+@app.get("/api/test")
+async def test_endpoint():
+    """Simple test endpoint to verify API routing works."""
+    return {
+        "message": "API routing is working!",
+        "timestamp": "2024-01-01T00:00:00Z",
+        "routes_registered": len(app.routes)
+    }
+
+
+@app.post("/api/test-post")
+async def test_post_endpoint(data: dict = None):
+    """Test POST endpoint."""
+    return {
+        "message": "POST request received",
+        "received_data": data,
+        "success": True
+    }
+
+
 # Include API routers
 app.include_router(auth.router, prefix="/api")
 app.include_router(social_media.router, prefix="/api")
 
+# Import and include AI router
+from app.api import ai
+app.include_router(ai.router, prefix="/api")
+
 
 # Error handlers
+from fastapi.responses import JSONResponse
+
 @app.exception_handler(404)
 async def not_found_handler(request, exc):
-    return {
-        "error": "Not Found",
-        "message": "The requested resource was not found",
-        "status_code": 404
-    }
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Not Found",
+            "message": "The requested resource was not found",
+            "status_code": 404
+        }
+    )
 
 
 @app.exception_handler(500)
 async def internal_error_handler(request, exc):
     logger.error(f"Internal server error: {exc}")
-    return {
-        "error": "Internal Server Error",
-        "message": "An internal server error occurred",
-        "status_code": 500
-    }
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "message": "An internal server error occurred",
+            "status_code": 500
+        }
+    )
 
 
 if __name__ == "__main__":

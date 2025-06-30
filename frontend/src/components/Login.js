@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 function Login() {
@@ -10,6 +11,7 @@ function Login() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   
+  const navigate = useNavigate();
   const { login, register } = useAuth();
 
   const handleSubmit = async (e) => {
@@ -17,8 +19,15 @@ function Login() {
     setLoading(true);
     setMessage('');
     
+    // Add timeout to prevent infinite hanging
+    const timeout = setTimeout(() => {
+      setMessage('Error: Request timed out. Please check if the backend server is running.');
+      setLoading(false);
+    }, 10000); // 10 second timeout
+    
     try {
       if (isRegister) {
+        console.log('Attempting registration...');
         await register({
           email,
           password,
@@ -28,12 +37,29 @@ function Login() {
         setMessage('Registration successful! Please login.');
         setIsRegister(false);
       } else {
-        await login(email, password);
+        console.log('Attempting login with:', { email });
+        console.log('API URL:', process.env.REACT_APP_API_URL || 'http://localhost:8000/api');
+        
+        const response = await login(email, password);
+        console.log('Login response:', response);
+        
         setMessage('Login successful!');
+        // Clear the timeout on success
+        clearTimeout(timeout);
+        
+        // Navigate to dashboard after successful login
+        navigate('/');
       }
     } catch (error) {
+      console.error('Login/Register error:', error);
       setMessage(`Error: ${error.message}`);
+      
+      // Log more details for debugging
+      if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        setMessage('Error: Cannot connect to backend server. Please ensure the backend is running on http://localhost:8000');
+      }
     } finally {
+      clearTimeout(timeout);
       setLoading(false);
     }
   };

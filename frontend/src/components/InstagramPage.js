@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import apiClient from '../services/apiClient';
 import './SocialMediaPage.css';
+import apiClient from '../services/apiClient';
 
 function InstagramPage() {
   const navigate = useNavigate();
@@ -69,19 +69,121 @@ function InstagramPage() {
 
   const handleInstagramConnect = async () => {
     if (!instagramConnected) {
-      // Instagram authentication logic will go here
+      // Check HTTPS requirement
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        setConnectionStatus('❌ Instagram login requires HTTPS. Please use https://localhost:3001 or deploy with HTTPS');
+        return;
+      }
+
+      // Check backend authentication
+      try {
+        await apiClient.getCurrentUser();
+      } catch (error) {
+        setConnectionStatus('❌ Your session has expired. Please log out and log back in to connect Instagram.');
+        setTimeout(() => {
+          navigate('/');
+        }, 3000);
+        return;
+      }
+
       setIsConnecting(true);
-      setConnectionStatus('🔄 Connecting to Instagram...');
-      
-      // Simulate connection process
-      setTimeout(() => {
-        setInstagramConnected(true);
-        setConnectionStatus('✅ Connected to Instagram successfully!');
+      setConnectionStatus('📦 Loading Facebook SDK for Instagram...');
+
+      try {
+        await loadFacebookSDK();
+
+        if (!window.FB || typeof window.FB.login !== 'function') {
+          setConnectionStatus('❌ Facebook SDK failed to load. Please refresh the page and try again.');
+          setIsConnecting(false);
+          return;
+        }
+
+        setConnectionStatus('🔐 Connecting to Instagram via Facebook...');
+
+        window.FB.login((response) => {
+          if (response.status === 'connected' && response.authResponse?.accessToken) {
+            (async () => {
+              try {
+                setConnectionStatus('✅ Facebook login successful! Checking Instagram connection...');
+                
+                const accessToken = response.authResponse.accessToken;
+                const userId = response.authResponse.userID;
+
+                // Check for Instagram accounts linked to Facebook Pages
+                const instagramAccountsResponse = await new Promise((resolve, reject) => {
+                  window.FB.api('/me/accounts', {
+                    access_token: accessToken,
+                    fields: 'id,name,instagram_business_account{id,username,profile_picture_url}'
+                  }, (response) => {
+                    if (response.error) {
+                      reject(new Error(`${response.error.message} (Code: ${response.error.code})`));
+                    } else {
+                      resolve(response);
+                    }
+                  });
+                });
+
+                // Filter pages that have Instagram accounts
+                const pagesWithInstagram = instagramAccountsResponse.data?.filter(
+                  page => page.instagram_business_account
+                ) || [];
+
+                if (pagesWithInstagram.length === 0) {
+                  setConnectionStatus('❌ No Instagram Business accounts found linked to your Facebook Pages. Please link an Instagram Business account to a Facebook Page first.');
+                  setIsConnecting(false);
+                  return;
+                }
+
+                // For now, use the first Instagram account found
+                const instagramAccount = pagesWithInstagram[0].instagram_business_account;
+                
+                setConnectionStatus('✅ Connected to Instagram successfully!');
+                setInstagramConnected(true);
+                setIsConnecting(false);
+
+                // Store Instagram account info for posting
+                // You might want to store this in state or context
+                console.log('Connected Instagram account:', instagramAccount);
+
+              } catch (error) {
+                console.error('[Instagram.login] Error in Instagram connection:', error);
+                setConnectionStatus('❌ Error during Instagram setup: ' + (error.message || 'Unknown error'));
+                setIsConnecting(false);
+                setInstagramConnected(false);
+              }
+            })();
+          } else {
+            if (response.status === 'not_authorized') {
+              setConnectionStatus('❌ Please authorize the app to continue and ensure you have Instagram Business accounts linked to your Facebook Pages.');
+            } else {
+              setConnectionStatus('❌ Instagram login cancelled or failed');
+            }
+            setIsConnecting(false);
+          }
+        }, {
+          scope: [
+            'pages_show_list',
+            'instagram_basic',
+            'instagram_manage_comments',
+            'instagram_manage_insights',
+            'instagram_content_publish',
+            'pages_read_engagement',
+            'pages_manage_posts'
+          ].join(','),
+          enable_profile_selector: true,
+          return_scopes: true,
+          auth_type: 'rerequest',
+          display: 'popup'
+        });
+      } catch (error) {
+        console.error('Instagram login error:', error);
+        setConnectionStatus('❌ Instagram login failed: ' + error.message);
         setIsConnecting(false);
-      }, 2000);
+      }
       return;
     }
 
+    // Instagram posting logic (when already connected)
     // Validate required fields
     if (!formData.caption || formData.caption.trim() === '') {
       setConnectionStatus('❌ Please enter a caption');
@@ -116,6 +218,46 @@ function InstagramPage() {
       setConnectionStatus('❌ Failed to create Instagram post: ' + (error.message || 'Unknown error'));
       setIsConnecting(false);
     }
+  };
+
+  // Load Facebook SDK (reuse the same function as FacebookPage)
+  const loadFacebookSDK = () => {
+    return new Promise((resolve, reject) => {
+      // Clean up any existing SDK
+      const existingScript = document.getElementById('facebook-jssdk');
+      if (existingScript) {
+        existingScript.remove();
+      }
+      if (window.FB) {
+        delete window.FB;
+      }
+      if (window.fbAsyncInit) {
+        delete window.fbAsyncInit;
+      }
+      
+      window.fbAsyncInit = function () {
+        try {
+          window.FB.init({
+            appId: process.env.REACT_APP_INSTAGRAM_APP_ID || '24293410896962741',
+            cookie: true,
+            xfbml: true,
+            version: 'v19.0'
+          });
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      const script = document.createElement('script');
+      script.id = 'facebook-jssdk';
+      script.src = 'https://connect.facebook.net/en_US/sdk.js';
+      script.async = true;
+      script.defer = true;
+      script.crossOrigin = 'anonymous';
+      script.onerror = () => reject(new Error('Failed to load Facebook SDK script'));
+      document.body.appendChild(script);
+    });
   };
 
   if (!authIsAuthenticated) {

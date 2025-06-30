@@ -22,6 +22,7 @@ export const AuthProvider = ({ children }) => {
       try {
         const token = localStorage.getItem('authToken');
         if (token) {
+          apiClient.setToken(token); // Ensure API client has the token
           const userData = await apiClient.getCurrentUser();
           setUser(userData);
           setIsAuthenticated(true);
@@ -31,6 +32,8 @@ export const AuthProvider = ({ children }) => {
         // Clear invalid token
         localStorage.removeItem('authToken');
         apiClient.setToken(null);
+        setUser(null);
+        setIsAuthenticated(false);
       } finally {
         setLoading(false);
       }

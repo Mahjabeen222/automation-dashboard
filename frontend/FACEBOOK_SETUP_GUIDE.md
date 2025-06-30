@@ -34,6 +34,42 @@
    - `pages_read_engagement` - To read page insights
    - `pages_show_list` - To get list of pages
 
+## 📸 Instagram Integration Setup
+
+### Adding Instagram to Your Existing Facebook App
+
+#### Step 1: Add Instagram Products
+1. In your Facebook App dashboard, go to **Products**
+2. Click **"+ Add Product"**
+3. Find **"Instagram Graph API"** and click **"Set Up"**
+4. This will add Instagram capabilities to your existing Facebook app
+
+#### Step 2: Configure Instagram Permissions
+1. Go to **App Review** → **Permissions and Features**
+2. Request these **additional** Instagram permissions:
+   - `instagram_basic` - Basic Instagram account access
+   - `instagram_content_publish` - Create and publish posts
+   - `instagram_manage_comments` - Manage comments on posts
+   - `instagram_manage_insights` - Access Instagram analytics
+
+#### Step 3: Instagram Business Account Requirements
+**IMPORTANT:** Instagram API requires:
+- ✅ Instagram **Business** or **Creator** account (not personal)
+- ✅ Instagram account must be **linked to a Facebook Page**
+- ✅ You must be an admin of both the Instagram account and Facebook Page
+
+#### Step 4: Link Instagram to Facebook Page
+1. Go to your Facebook Page settings
+2. Navigate to **Instagram** → **Connect Account**
+3. Log in to your Instagram Business account
+4. Authorize the connection
+
+#### Step 5: Test Instagram Connection
+1. Use the updated Instagram page in your automation dashboard
+2. Click "Connect Instagram"
+3. It will use the same Facebook login but with Instagram permissions
+4. Verify that your Instagram Business account is detected
+
 ### 2. Environment Configuration
 
 Create a `.env` file in your project root:
@@ -52,42 +88,56 @@ REACT_APP_FACEBOOK_APP_ID=your_actual_app_id_here
 
 ## 🐛 Common Issues & Solutions
 
-### Issue 1: "Facebook SDK not loaded"
+### Issue 1: "No Instagram Business accounts found"
+**Solutions:**
+- Ensure you have an Instagram **Business** account (not personal)
+- Link your Instagram account to a Facebook Page first
+- Make sure you're an admin of both accounts
+- Check that the Facebook Page → Instagram connection is active
+
+### Issue 2: "Instagram permissions denied"
+**Solutions:**
+- Your app needs App Review approval for Instagram permissions in production
+- For testing, add yourself as a test user in App Roles → Roles
+- Ensure your Instagram account is set to Business/Creator mode
+
+### Issue 3: "Facebook SDK not loaded"
 **Solution:** Check your internet connection and firewall settings. The SDK loads from Facebook's CDN.
 
-### Issue 2: "Facebook App ID not configured"
+### Issue 4: "Facebook App ID not configured"
 **Solution:** Make sure you have a `.env` file with `REACT_APP_FACEBOOK_APP_ID=your_app_id`
 
-### Issue 3: "Login was cancelled or failed"
+### Issue 5: "Login was cancelled or failed"
 **Solutions:**
 - Make sure your domain is added to Facebook App settings
 - Check if your app is in "Development" mode (only you can test it)
 - For production, submit your app for review
 
-### Issue 4: "No Facebook pages found"
+### Issue 6: "No Facebook pages found"
 **Solution:** 
 - You need to have a Facebook Page (not just a personal profile)
 - Create a page at [facebook.com/pages/create](https://facebook.com/pages/create)
 
-### Issue 5: "Webhook failed"
+### Issue 7: "Webhook failed"
 **Solutions:**
 - Check if your Make.com scenario is active
 - Verify the webhook URL is correct
 - Check Make.com logs for errors
 
-### Issue 6: Permission Errors
+### Issue 8: Permission Errors
 **Solutions:**
 - Make sure you've requested the right permissions in Facebook App settings
 - For production apps, permissions need to be approved by Facebook
 
 ## 🔍 Debug Information
 
-When you click "Connect to Facebook", check the browser console for:
+When you click "Connect Instagram", check the browser console for:
 
 1. **SDK Loading:** Should see "✅ Facebook SDK initialized successfully"
 2. **Login Process:** Should see detailed logs of each step
 3. **API Responses:** Should see Facebook API responses
-4. **Webhook Communication:** Should see webhook request/response details
+4. **Instagram Accounts:** Should see detected Instagram Business accounts
+5. **Webhook Communication:** Should see webhook request/response details
 
 ## 📱 Testing Steps
 
@@ -106,6 +156,9 @@ When you click "Connect to Facebook", check the browser console for:
 5. **Test Page Access:**
    - Should see "Found page: [Page Name]" in activity log
 
+6. **Test Instagram Detection:**
+   - Should see "Connected Instagram account: [Account Details]" in console
+
 ## 🚀 Production Checklist
 
 - [ ] Facebook App is switched from "Development" to "Live" mode
@@ -113,6 +166,8 @@ When you click "Connect to Facebook", check the browser console for:
 - [ ] Domain is properly configured in Facebook App settings
 - [ ] SSL certificate is installed (HTTPS required for production)
 - [ ] Make.com webhook is tested and working
+- [ ] Instagram Business account is properly linked to Facebook Page
+- [ ] Instagram permissions are approved through App Review
 
 ## 📞 Still Having Issues?
 
@@ -121,5 +176,7 @@ If you're still having problems, please share:
 2. **Your Facebook App ID** (for verification)
 3. **The exact error message** from the activity log
 4. **Your domain/URL** you're testing from
+5. **Instagram account type** (Business/Creator/Personal)
+6. **Whether Instagram is linked to a Facebook Page**
 
 This will help identify the specific issue! 🕵️‍♂️ 

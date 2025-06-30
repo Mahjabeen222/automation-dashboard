@@ -14,8 +14,11 @@ from app.schemas.social_media import (
     SuccessResponse, ErrorResponse
 )
 from datetime import datetime
+import logging
 
 router = APIRouter(prefix="/social", tags=["social media"])
+
+logger = logging.getLogger(__name__)
 
 
 # Social Account Management
@@ -61,6 +64,8 @@ async def connect_facebook(
 ):
     """Connect Facebook account and pages."""
     try:
+        logger.info(f"Facebook connect request for user {current_user.id}: {request.user_id}")
+        logger.info(f"Pages data received: {len(request.pages or [])} pages")
         # Check if account already exists
         existing_account = db.query(SocialAccount).filter(
             SocialAccount.user_id == current_user.id,
@@ -93,7 +98,9 @@ async def connect_facebook(
         # Handle pages if provided
         connected_pages = []
         if request.pages:
-            for page_info in request.pages:
+            logger.info(f"Processing {len(request.pages)} Facebook pages")
+            for i, page_info in enumerate(request.pages):
+                logger.info(f"Processing page {i+1}/{len(request.pages)}: {page_info.name} (ID: {page_info.id})")
                 # Create or update page account
                 existing_page = db.query(SocialAccount).filter(
                     SocialAccount.user_id == current_user.id,
@@ -102,12 +109,25 @@ async def connect_facebook(
                 ).first()
                 
                 if existing_page:
+                    # Update existing page
                     existing_page.access_token = page_info.access_token
                     existing_page.display_name = page_info.name
+                    existing_page.username = page_info.name
                     existing_page.is_connected = True
+                    existing_page.last_sync_at = datetime.utcnow()
+                    existing_page.follower_count = getattr(page_info, 'followerCount', 0) or 0
+                    existing_page.profile_picture_url = getattr(page_info, 'profilePicture', None)
+                    existing_page.platform_data = {
+                        "category": page_info.category,
+                        "can_post": getattr(page_info, 'canPost', page_info.can_post),
+                        "can_comment": getattr(page_info, 'canComment', True),
+                        "follower_count": getattr(page_info, 'followerCount', 0)
+                    }
                     db.commit()
                     connected_pages.append(existing_page)
+                    logger.info(f"Updated existing Facebook page: {page_info.name} (ID: {page_info.id})")
                 else:
+                    # Create new page account
                     page_account = SocialAccount(
                         user_id=current_user.id,
                         platform="facebook",
@@ -116,7 +136,14 @@ async def connect_facebook(
                         display_name=page_info.name,
                         access_token=page_info.access_token,
                         account_type="page",
-                        platform_data={"category": page_info.category, "can_post": page_info.can_post},
+                        follower_count=getattr(page_info, 'followerCount', 0) or 0,
+                        profile_picture_url=getattr(page_info, 'profilePicture', None),
+                        platform_data={
+                            "category": page_info.category,
+                            "can_post": getattr(page_info, 'canPost', page_info.can_post),
+                            "can_comment": getattr(page_info, 'canComment', True),
+                            "follower_count": getattr(page_info, 'followerCount', 0)
+                        },
                         is_connected=True,
                         last_sync_at=datetime.utcnow()
                     )
@@ -124,20 +151,43 @@ async def connect_facebook(
                     db.commit()
                     db.refresh(page_account)
                     connected_pages.append(page_account)
+                    logger.info(f"Created new Facebook page: {page_info.name} (ID: {page_info.id})")
+        
+        # Return detailed response
+        logger.info(f"Facebook connection successful. Account ID: {account.id}, Pages: {len(connected_pages)}")
         
         return SuccessResponse(
-            message="Facebook account connected successfully",
+            message=f"Facebook account connected successfully with {len(connected_pages)} pages",
             data={
                 "account_id": account.id,
+                "user_account": {
+                    "id": account.id,
+                    "platform_id": account.platform_user_id,
+                    "name": account.display_name or "Personal Profile",
+                    "type": "personal"
+                },
+                "pages": [{
+                    "id": p.id,
+                    "platform_id": p.platform_user_id,
+                    "name": p.display_name,
+                    "category": p.platform_data.get("category", "Page"),
+                    "can_post": p.platform_data.get("can_post", True),
+                    "can_comment": p.platform_data.get("can_comment", True),
+                    "follower_count": p.follower_count or 0,
+                    "profile_picture": p.profile_picture_url
+                } for p in connected_pages],
                 "pages_connected": len(connected_pages),
-                "pages": [{"id": p.id, "name": p.display_name} for p in connected_pages]
+                "total_accounts": len(connected_pages) + 1  # Include user account
             }
         )
         
     except Exception as e:
+        logger.error(f"Error connecting Facebook account: {str(e)}", exc_info=True)
+        # Don't expose internal errors to frontend
+        error_message = "Database connection error" if "database" in str(e).lower() else str(e)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to connect Facebook account: {str(e)}"
+            status_code=500,
+            detail=f"Failed to connect Facebook account: {error_message}"
         )
 
 
@@ -147,8 +197,12 @@ async def create_facebook_post(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Create and schedule a Facebook post (replaces Make.com webhook)."""
+    """Create and schedule a Facebook post with AI integration (replaces Make.com webhook)."""
     try:
+        # Import Facebook service
+        from app.services.facebook_service import facebook_service
+        from app.services.groq_service import groq_service
+        
         # Find the Facebook account/page
         account = db.query(SocialAccount).filter(
             SocialAccount.user_id == current_user.id,
@@ -161,24 +215,92 @@ async def create_facebook_post(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Facebook page not found"
             )
+
+        if not account.access_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Facebook access token not found. Please reconnect your account."
+            )
         
-        # Create post record
+        final_content = request.message
+        ai_generated = False
+        
+        # Handle AI-generated content for auto posts
+        if request.post_type == "auto-generated" and groq_service.is_available():
+            try:
+                ai_result = await groq_service.generate_facebook_post(request.message)
+                if ai_result["success"]:
+                    final_content = ai_result["content"]
+                    ai_generated = True
+            except Exception as ai_error:
+                logger.error(f"AI generation failed: {ai_error}")
+                # Fall back to original message if AI fails
+                print(f"AI generation failed, using original message: {ai_error}")
+        
+        # Create post record in database
         post = Post(
             user_id=current_user.id,
             social_account_id=account.id,
-            content=request.message,
+            content=final_content,
             post_type=PostType.IMAGE if request.image else PostType.TEXT,
             media_urls=[request.image] if request.image else None,
-            status=PostStatus.SCHEDULED if request.post_type == "post-auto" else PostStatus.DRAFT,
-            is_auto_post=request.post_type == "post-auto"
+            status=PostStatus.SCHEDULED,
+            is_auto_post=ai_generated,
+            metadata={
+                "ai_generated": ai_generated,
+                "original_prompt": request.message if ai_generated else None,
+                "post_type": request.post_type
+            }
         )
         
         db.add(post)
         db.commit()
         db.refresh(post)
         
-        # For now, just mark as created (Celery tasks will be implemented later)
-        message = "Post scheduled successfully" if request.post_type == "post-auto" else "Post created as draft"
+        # Actually post to Facebook
+        try:
+            # Determine media type
+            media_type = "text"
+            if request.image:
+                media_type = "photo"
+            
+            # Use Facebook service to create the post
+            facebook_result = await facebook_service.create_post(
+                page_id=request.page_id,
+                access_token=account.access_token,
+                message=final_content,
+                media_url=request.image,
+                media_type=media_type
+            )
+            
+            # Update post status based on Facebook result
+            if facebook_result and facebook_result.get("success"):
+                post.status = PostStatus.PUBLISHED
+                post.platform_post_id = facebook_result.get("post_id")
+                post.platform_response = facebook_result
+            else:
+                post.status = PostStatus.FAILED
+                post.error_message = facebook_result.get("error", "Unknown Facebook API error")
+            
+            db.commit()
+            
+        except Exception as fb_error:
+            logger.error(f"Facebook posting error: {fb_error}")
+            post.status = PostStatus.FAILED
+            post.error_message = str(fb_error)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to post to Facebook: {str(fb_error)}"
+            )
+        
+        # Prepare response
+        if post.status == PostStatus.PUBLISHED:
+            message = "Post published successfully to Facebook!"
+        elif ai_generated:
+            message = "Post created with AI content (Facebook posting failed)"
+        else:
+            message = "Post created successfully (Facebook posting failed)"
         
         return SuccessResponse(
             message=message,
@@ -186,11 +308,17 @@ async def create_facebook_post(
                 "post_id": post.id,
                 "status": post.status,
                 "platform": "facebook",
-                "page_name": account.display_name
+                "page_name": account.display_name,
+                "ai_generated": ai_generated,
+                "facebook_post_id": post.platform_post_id,
+                "content": final_content
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Error creating Facebook post: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to create post: {str(e)}"
@@ -203,8 +331,11 @@ async def toggle_auto_reply(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Toggle auto-reply for Facebook page (replaces Make.com webhook)."""
+    """Toggle auto-reply for Facebook page with AI integration (replaces Make.com webhook)."""
     try:
+        # Import Facebook service
+        from app.services.facebook_service import facebook_service
+        
         # Find the Facebook account/page
         account = db.query(SocialAccount).filter(
             SocialAccount.user_id == current_user.id,
@@ -218,7 +349,15 @@ async def toggle_auto_reply(
                 detail="Facebook page not found"
             )
         
-        # Find or create auto-reply rule
+        # Use Facebook service to setup auto-reply
+        facebook_result = await facebook_service.setup_auto_reply(
+            page_id=request.page_id,
+            access_token=account.access_token,
+            enabled=request.enabled,
+            template=request.response_template
+        )
+        
+        # Find or create auto-reply rule in database
         auto_reply_rule = db.query(AutomationRule).filter(
             AutomationRule.user_id == current_user.id,
             AutomationRule.social_account_id == account.id,
@@ -228,7 +367,11 @@ async def toggle_auto_reply(
         if auto_reply_rule:
             # Update existing rule
             auto_reply_rule.is_active = request.enabled
-            auto_reply_rule.actions = {"response_template": request.response_template}
+            auto_reply_rule.actions = {
+                "response_template": request.response_template,
+                "ai_enabled": True,
+                "facebook_setup": facebook_result
+            }
         else:
             # Create new auto-reply rule
             auto_reply_rule = AutomationRule(
@@ -238,7 +381,11 @@ async def toggle_auto_reply(
                 rule_type=RuleType.AUTO_REPLY,
                 trigger_type=TriggerType.ENGAGEMENT_BASED,
                 trigger_conditions={"event": "comment"},
-                actions={"response_template": request.response_template},
+                actions={
+                    "response_template": request.response_template,
+                    "ai_enabled": True,
+                    "facebook_setup": facebook_result
+                },
                 is_active=request.enabled
             )
             db.add(auto_reply_rule)
@@ -246,11 +393,13 @@ async def toggle_auto_reply(
         db.commit()
         
         return SuccessResponse(
-            message=f"Auto-reply {'enabled' if request.enabled else 'disabled'} successfully",
+            message=f"Auto-reply {'enabled' if request.enabled else 'disabled'} successfully with AI integration",
             data={
                 "rule_id": auto_reply_rule.id,
                 "enabled": request.enabled,
-                "page_name": account.display_name
+                "ai_enabled": True,
+                "page_name": account.display_name,
+                "facebook_setup": facebook_result
             }
         )
         
@@ -476,4 +625,35 @@ async def delete_automation_rule(
     db.delete(rule)
     db.commit()
     
-    return SuccessResponse(message="Automation rule deleted successfully") 
+    return SuccessResponse(message="Automation rule deleted successfully")
+
+
+# Debug endpoint for troubleshooting Facebook connections
+@router.get("/debug/facebook-accounts")
+async def debug_facebook_accounts(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Debug endpoint to see all Facebook accounts for current user."""
+    facebook_accounts = db.query(SocialAccount).filter(
+        SocialAccount.user_id == current_user.id,
+        SocialAccount.platform == "facebook"
+    ).all()
+    
+    return {
+        "user_id": current_user.id,
+        "total_facebook_accounts": len(facebook_accounts),
+        "accounts": [{
+            "id": acc.id,
+            "platform_user_id": acc.platform_user_id,
+            "username": acc.username,
+            "display_name": acc.display_name,
+            "account_type": acc.account_type,
+            "is_connected": acc.is_connected,
+            "follower_count": acc.follower_count,
+            "profile_picture_url": acc.profile_picture_url,
+            "platform_data": acc.platform_data,
+            "last_sync_at": acc.last_sync_at,
+            "connected_at": acc.connected_at
+        } for acc in facebook_accounts]
+    } 
