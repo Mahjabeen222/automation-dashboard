@@ -35,6 +35,9 @@ class ApiClient {
     };
 
     try {
+      console.log(`🔍 DEBUG: baseURL = ${this.baseURL}`);
+      console.log(`🔍 DEBUG: endpoint = ${endpoint}`);
+      console.log(`🔍 DEBUG: final URL = ${url}`);
       console.log(`Making API request to: ${url}`);
       
       // Add timeout to fetch request
@@ -87,14 +90,14 @@ class ApiClient {
 
   // Authentication endpoints
   async register(userData) {
-    return this.request('/auth/register', {
+    return this.request('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify(userData),
     });
   }
 
   async login(email, password) {
-    const response = await this.request('/auth/login', {
+    const response = await this.request('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
@@ -107,7 +110,7 @@ class ApiClient {
   }
 
   async getCurrentUser() {
-    return this.request('/auth/me');
+    return this.request('/api/auth/me');
   }
 
   async logout() {
@@ -116,7 +119,7 @@ class ApiClient {
 
   // Social Media endpoints (Replace Make.com webhooks)
   async connectFacebook(accessToken, userId, pages = []) {
-    return this.request('/social/facebook/connect', {
+    return this.request('/api/social/facebook/connect', {
       method: 'POST',
       body: JSON.stringify({
         access_token: accessToken,
