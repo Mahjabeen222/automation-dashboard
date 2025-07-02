@@ -4,7 +4,9 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.config import get_settings
 from app.database import create_tables
 from app.api import auth, social_media
+from app.services.scheduler_service import scheduler_service
 import logging
+import asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,8 +28,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Add trusted host middleware for production
@@ -51,6 +54,13 @@ async def startup_event():
         logger.error(f"Database initialization error: {e}")
         # Don't fail startup for database issues
     
+    # Start scheduler service for automatic post scheduling
+    try:
+        asyncio.create_task(scheduler_service.start())
+        logger.info("Scheduler service started for automatic posts")
+    except Exception as e:
+        logger.error(f"Failed to start scheduler service: {e}")
+    
     # Log registered routes for debugging
     routes = [route.path for route in app.routes]
     logger.info(f"Registered routes: {routes}")
@@ -62,6 +72,13 @@ async def startup_event():
 async def shutdown_event():
     """Clean up resources."""
     logger.info("Shutting down Automation Dashboard API...")
+    
+    # Stop scheduler service
+    try:
+        scheduler_service.stop()
+        logger.info("Scheduler service stopped")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler service: {e}")
 
 
 # Health check endpoint

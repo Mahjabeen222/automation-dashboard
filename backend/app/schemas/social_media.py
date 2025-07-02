@@ -167,4 +167,42 @@ class SuccessResponse(BaseModel):
 class ErrorResponse(BaseModel):
     success: bool = False
     error: str
-    details: Optional[str] = None 
+    details: Optional[str] = None
+
+
+# Instagram-specific schemas
+class InstagramAccountInfo(BaseModel):
+    id: str
+    username: str
+    profile_picture_url: Optional[str] = None
+    followers_count: Optional[int] = 0
+    media_count: Optional[int] = 0
+    account_type: str = "BUSINESS"
+    page_id: str
+    page_name: str
+    access_token: str
+
+
+class InstagramConnectRequest(BaseModel):
+    access_token: str
+    user_id: Optional[str] = None  # Not needed - user determined from auth token
+    instagram_accounts: Optional[List[InstagramAccountInfo]] = None
+
+
+class InstagramPostRequest(BaseModel):
+    instagram_user_id: str
+    caption: str
+    image_url: str
+    post_type: str = "post-auto"
+
+
+class InstagramMediaResponse(BaseModel):
+    id: str
+    caption: Optional[str] = None
+    media_type: str
+    media_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    permalink: str
+    timestamp: str
+    like_count: Optional[int] = 0
+    comments_count: Optional[int] = 0 

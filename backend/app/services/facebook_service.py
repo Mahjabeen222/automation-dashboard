@@ -1,7 +1,7 @@
 import logging
 import httpx
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.config import get_settings
 from app.services.groq_service import groq_service
 
@@ -17,6 +17,144 @@ class FacebookService:
         self.app_id = settings.facebook_app_id
         self.app_secret = settings.facebook_app_secret
     
+    async def exchange_for_long_lived_token(self, short_lived_token: str) -> Dict[str, Any]:
+        """
+        Exchange a short-lived access token for a long-lived token.
+        
+        Args:
+            short_lived_token: Short-lived Facebook access token
+            
+        Returns:
+            Dict containing the long-lived token and expiration info
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.graph_api_base}/oauth/access_token",
+                    params={
+                        "grant_type": "fb_exchange_token",
+                        "client_id": self.app_id,
+                        "client_secret": self.app_secret,
+                        "fb_exchange_token": short_lived_token
+                    }
+                )
+                
+                if response.status_code == 200:
+                    token_data = response.json()
+                    
+                    # Calculate expiration time (default to 60 days if not specified)
+                    expires_in_seconds = token_data.get("expires_in", 5184000)  # 60 days default
+                    expires_at = datetime.utcnow() + timedelta(seconds=expires_in_seconds)
+                    
+                    return {
+                        "success": True,
+                        "access_token": token_data.get("access_token"),
+                        "token_type": token_data.get("token_type", "bearer"),
+                        "expires_in": expires_in_seconds,
+                        "expires_at": expires_at
+                    }
+                else:
+                    logger.error(f"Token exchange failed: {response.text}")
+                    return {
+                        "success": False,
+                        "error": f"Token exchange failed: {response.text}"
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Error exchanging token: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def validate_and_refresh_token(self, access_token: str, expires_at: Optional[datetime] = None) -> Dict[str, Any]:
+        """
+        Validate an access token and refresh if needed.
+        
+        Args:
+            access_token: Facebook access token to validate
+            expires_at: Known expiration time of the token
+            
+        Returns:
+            Dict containing validation result and potentially new token
+        """
+        try:
+            # Check if token is expired based on stored expiration time
+            if expires_at and expires_at <= datetime.utcnow():
+                logger.info("Token is expired based on stored expiration time")
+                return {
+                    "valid": False,
+                    "expired": True,
+                    "error": "Token has expired",
+                    "needs_reconnection": True
+                }
+            
+            # Validate token with Facebook API
+            validation_result = await self.validate_access_token(access_token)
+            
+            if not validation_result["valid"]:
+                # Check if it's an expiration error
+                error_msg = validation_result.get("error", "")
+                if "expired" in error_msg.lower() or "session" in error_msg.lower():
+                    return {
+                        "valid": False,
+                        "expired": True,
+                        "error": error_msg,
+                        "needs_reconnection": True
+                    }
+                else:
+                    return validation_result
+            
+            # Token is valid, check if it's close to expiration and needs refresh
+            # Note: For long-lived tokens, Facebook auto-refreshes them if the user is active
+            return {
+                "valid": True,
+                "user_id": validation_result.get("user_id"),
+                "name": validation_result.get("name"),
+                "email": validation_result.get("email"),
+                "picture": validation_result.get("picture")
+            }
+            
+        except Exception as e:
+            logger.error(f"Error validating/refreshing token: {e}")
+            return {"valid": False, "error": str(e)}
+
+    async def get_long_lived_page_tokens(self, long_lived_user_token: str) -> List[Dict[str, Any]]:
+        """
+        Get long-lived page access tokens from a long-lived user token.
+        
+        Args:
+            long_lived_user_token: Long-lived user access token
+            
+        Returns:
+            List of pages with long-lived page access tokens
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.graph_api_base}/me/accounts",
+                    params={
+                        "access_token": long_lived_user_token,
+                        "fields": "id,name,category,access_token,picture,fan_count,tasks"
+                    }
+                )
+                
+                if response.status_code == 200:
+                    pages_data = response.json()
+                    pages = pages_data.get("data", [])
+                    
+                    # Page access tokens from long-lived user tokens are automatically long-lived
+                    # and don't expire unless the user changes password, revokes permissions, etc.
+                    for page in pages:
+                        page["token_type"] = "long_lived_page_token"
+                        page["expires_at"] = None  # Page tokens don't have explicit expiration
+                    
+                    return pages
+                else:
+                    logger.error(f"Failed to get page tokens: {response.text}")
+                    return []
+                    
+        except Exception as e:
+            logger.error(f"Error getting page tokens: {e}")
+            return []
+
     async def validate_access_token(self, access_token: str) -> Dict[str, Any]:
         """
         Validate Facebook access token and get user info.
@@ -48,8 +186,10 @@ class FacebookService:
                         "picture": user_data.get("picture", {}).get("data", {}).get("url")
                     }
                 else:
-                    logger.error(f"Token validation failed: {response.text}")
-                    return {"valid": False, "error": "Invalid access token"}
+                    error_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {"error": {"message": response.text}}
+                    error_message = error_data.get("error", {}).get("message", "Invalid access token")
+                    logger.error(f"Token validation failed: {error_message}")
+                    return {"valid": False, "error": error_message}
                     
         except Exception as e:
             logger.error(f"Error validating Facebook token: {e}")
@@ -324,5 +464,5 @@ class FacebookService:
         return bool(self.app_id and self.app_secret)
 
 
-# Global service instance
+# Create a singleton instance
 facebook_service = FacebookService() 

@@ -7,14 +7,17 @@ from app.models.user import User
 from app.models.social_account import SocialAccount
 from app.models.post import Post, PostStatus, PostType
 from app.models.automation_rule import AutomationRule, RuleType, TriggerType
+from app.models.scheduled_post import ScheduledPost, FrequencyType
 from app.schemas.social_media import (
     SocialAccountResponse, PostCreate, PostResponse, PostUpdate,
     AutomationRuleCreate, AutomationRuleResponse, AutomationRuleUpdate,
     FacebookConnectRequest, FacebookPostRequest, AutoReplyToggleRequest,
+    InstagramConnectRequest, InstagramPostRequest, InstagramAccountInfo,
     SuccessResponse, ErrorResponse
 )
 from datetime import datetime
 import logging
+from app.services.instagram_service import instagram_service
 
 router = APIRouter(prefix="/social", tags=["social media"])
 
@@ -56,6 +59,102 @@ async def get_social_account(
 
 
 # Facebook Integration
+@router.get("/facebook/status")
+async def get_facebook_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Check if user has existing Facebook connections."""
+    facebook_accounts = db.query(SocialAccount).filter(
+        SocialAccount.user_id == current_user.id,
+        SocialAccount.platform == "facebook",
+        SocialAccount.is_connected == True
+    ).all()
+    
+    if not facebook_accounts:
+        return {
+            "connected": False,
+            "message": "No Facebook accounts connected"
+        }
+    
+    # Separate personal accounts from pages
+    personal_accounts = [acc for acc in facebook_accounts if acc.account_type == "personal"]
+    page_accounts = [acc for acc in facebook_accounts if acc.account_type == "page"]
+    
+    return {
+        "connected": True,
+        "message": f"Found {len(facebook_accounts)} Facebook connection(s)",
+        "accounts": {
+            "personal": [{
+                "id": acc.id,
+                "platform_id": acc.platform_user_id,
+                "name": acc.display_name or "Personal Profile",
+                "profile_picture": acc.profile_picture_url,
+                "connected_at": acc.connected_at.isoformat() if acc.connected_at else None
+            } for acc in personal_accounts],
+            "pages": [{
+                "id": acc.id,
+                "platform_id": acc.platform_user_id,
+                "name": acc.display_name,
+                "category": acc.platform_data.get("category", "Page") if acc.platform_data else "Page",
+                "profile_picture": acc.profile_picture_url,
+                "follower_count": acc.follower_count or 0,
+                "can_post": acc.platform_data.get("can_post", True) if acc.platform_data else True,
+                "can_comment": acc.platform_data.get("can_comment", True) if acc.platform_data else True,
+                "connected_at": acc.connected_at.isoformat() if acc.connected_at else None
+            } for acc in page_accounts]
+        },
+        "total_accounts": len(facebook_accounts),
+        "pages_count": len(page_accounts)
+    }
+
+
+@router.post("/facebook/logout")
+async def logout_facebook(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Disconnect all Facebook accounts for the user."""
+    try:
+        # Find all Facebook accounts for this user
+        facebook_accounts = db.query(SocialAccount).filter(
+            SocialAccount.user_id == current_user.id,
+            SocialAccount.platform == "facebook"
+        ).all()
+        
+        if not facebook_accounts:
+            return SuccessResponse(
+                message="No Facebook accounts to disconnect"
+            )
+        
+        # Mark all as disconnected and clear sensitive data
+        disconnected_count = 0
+        for account in facebook_accounts:
+            account.is_connected = False
+            account.access_token = ""  # Clear the token for security
+            account.last_sync_at = datetime.utcnow()
+            disconnected_count += 1
+        
+        db.commit()
+        
+        logger.info(f"User {current_user.id} disconnected {disconnected_count} Facebook accounts")
+        
+        return SuccessResponse(
+            message=f"Successfully disconnected {disconnected_count} Facebook account(s)",
+            data={
+                "disconnected_accounts": disconnected_count,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error disconnecting Facebook accounts for user {current_user.id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to disconnect Facebook accounts"
+        )
+
+
 @router.post("/facebook/connect")
 async def connect_facebook(
     request: FacebookConnectRequest,
@@ -64,8 +163,35 @@ async def connect_facebook(
 ):
     """Connect Facebook account and pages."""
     try:
+        from app.services.facebook_service import facebook_service
+        
         logger.info(f"Facebook connect request for user {current_user.id}: {request.user_id}")
         logger.info(f"Pages data received: {len(request.pages or [])} pages")
+        
+        # Exchange short-lived token for long-lived token
+        logger.info("Exchanging short-lived token for long-lived token...")
+        token_exchange_result = await facebook_service.exchange_for_long_lived_token(request.access_token)
+        
+        if not token_exchange_result["success"]:
+            logger.error(f"Token exchange failed: {token_exchange_result.get('error')}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to get long-lived token: {token_exchange_result.get('error')}"
+            )
+        
+        long_lived_token = token_exchange_result["access_token"]
+        expires_at = token_exchange_result["expires_at"]
+        
+        logger.info(f"Successfully got long-lived token, expires at: {expires_at}")
+        
+        # Validate the new long-lived token
+        validation_result = await facebook_service.validate_access_token(long_lived_token)
+        if not validation_result["valid"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Long-lived token validation failed: {validation_result.get('error')}"
+            )
+        
         # Check if account already exists
         existing_account = db.query(SocialAccount).filter(
             SocialAccount.user_id == current_user.id,
@@ -74,20 +200,26 @@ async def connect_facebook(
         ).first()
         
         if existing_account:
-            # Update existing account
-            existing_account.access_token = request.access_token
+            # Update existing account with long-lived token
+            existing_account.access_token = long_lived_token
+            existing_account.token_expires_at = expires_at
             existing_account.is_connected = True
             existing_account.last_sync_at = datetime.utcnow()
+            existing_account.display_name = validation_result.get("name")
+            existing_account.profile_picture_url = validation_result.get("picture")
             db.commit()
             account = existing_account
         else:
-            # Create new account
+            # Create new account with long-lived token
             account = SocialAccount(
                 user_id=current_user.id,
                 platform="facebook",
                 platform_user_id=request.user_id,
-                access_token=request.access_token,
+                access_token=long_lived_token,
+                token_expires_at=expires_at,
                 account_type="personal",
+                display_name=validation_result.get("name"),
+                profile_picture_url=validation_result.get("picture"),
                 is_connected=True,
                 last_sync_at=datetime.utcnow()
             )
@@ -95,99 +227,107 @@ async def connect_facebook(
             db.commit()
             db.refresh(account)
         
-        # Handle pages if provided
+        # Handle pages if provided - get long-lived page tokens
         connected_pages = []
         if request.pages:
-            logger.info(f"Processing {len(request.pages)} Facebook pages")
-            for i, page_info in enumerate(request.pages):
-                logger.info(f"Processing page {i+1}/{len(request.pages)}: {page_info.name} (ID: {page_info.id})")
-                # Create or update page account
+            logger.info(f"Processing {len(request.pages)} Facebook pages with long-lived tokens")
+            
+            # Get long-lived page tokens
+            long_lived_pages = await facebook_service.get_long_lived_page_tokens(long_lived_token)
+            
+            # Create a mapping of page IDs to long-lived tokens
+            page_token_map = {page["id"]: page["access_token"] for page in long_lived_pages}
+            
+            for page_data in request.pages:
+                # Ensure we have a dict so we can use .get safely
+                if hasattr(page_data, "dict"):
+                    page_data = page_data.dict()
+
+                page_id = page_data.get("id")
+                page_access_token = page_token_map.get(page_id, page_data.get("access_token", ""))
+                
+                if not page_access_token:
+                    logger.warning(f"No access token found for page {page_id}")
+                    continue
+                
+                # Check if page account already exists
                 existing_page = db.query(SocialAccount).filter(
                     SocialAccount.user_id == current_user.id,
                     SocialAccount.platform == "facebook",
-                    SocialAccount.platform_user_id == page_info.id
+                    SocialAccount.platform_user_id == page_id
                 ).first()
                 
                 if existing_page:
-                    # Update existing page
-                    existing_page.access_token = page_info.access_token
-                    existing_page.display_name = page_info.name
-                    existing_page.username = page_info.name
+                    # Update existing page account
+                    existing_page.access_token = page_access_token
+                    existing_page.token_expires_at = None  # Page tokens don't expire
+                    existing_page.display_name = page_data.get("name", existing_page.display_name)
+                    existing_page.profile_picture_url = page_data.get("picture", {}).get("data", {}).get("url", existing_page.profile_picture_url)
+                    existing_page.follower_count = page_data.get("fan_count", existing_page.follower_count)
                     existing_page.is_connected = True
                     existing_page.last_sync_at = datetime.utcnow()
-                    existing_page.follower_count = getattr(page_info, 'followerCount', 0) or 0
-                    existing_page.profile_picture_url = getattr(page_info, 'profilePicture', None)
                     existing_page.platform_data = {
-                        "category": page_info.category,
-                        "can_post": getattr(page_info, 'canPost', page_info.can_post),
-                        "can_comment": getattr(page_info, 'canComment', True),
-                        "follower_count": getattr(page_info, 'followerCount', 0)
+                        "category": page_data.get("category"),
+                        "tasks": page_data.get("tasks", []),
+                        "can_post": "CREATE_CONTENT" in page_data.get("tasks", []),
+                        "can_comment": "MODERATE" in page_data.get("tasks", [])
                     }
-                    db.commit()
-                    connected_pages.append(existing_page)
-                    logger.info(f"Updated existing Facebook page: {page_info.name} (ID: {page_info.id})")
+                    page_account = existing_page
                 else:
                     # Create new page account
                     page_account = SocialAccount(
                         user_id=current_user.id,
                         platform="facebook",
-                        platform_user_id=page_info.id,
-                        username=page_info.name,
-                        display_name=page_info.name,
-                        access_token=page_info.access_token,
+                        platform_user_id=page_id,
+                        username=page_data.get("name", "").replace(" ", "").lower(),
+                        display_name=page_data.get("name"),
+                        access_token=page_access_token,
+                        token_expires_at=None,  # Page tokens don't expire
+                        profile_picture_url=page_data.get("picture", {}).get("data", {}).get("url"),
+                        follower_count=page_data.get("fan_count", 0),
                         account_type="page",
-                        follower_count=getattr(page_info, 'followerCount', 0) or 0,
-                        profile_picture_url=getattr(page_info, 'profilePicture', None),
                         platform_data={
-                            "category": page_info.category,
-                            "can_post": getattr(page_info, 'canPost', page_info.can_post),
-                            "can_comment": getattr(page_info, 'canComment', True),
-                            "follower_count": getattr(page_info, 'followerCount', 0)
+                            "category": page_data.get("category"),
+                            "tasks": page_data.get("tasks", []),
+                            "can_post": "CREATE_CONTENT" in page_data.get("tasks", []),
+                            "can_comment": "MODERATE" in page_data.get("tasks", [])
                         },
                         is_connected=True,
                         last_sync_at=datetime.utcnow()
                     )
                     db.add(page_account)
-                    db.commit()
-                    db.refresh(page_account)
-                    connected_pages.append(page_account)
-                    logger.info(f"Created new Facebook page: {page_info.name} (ID: {page_info.id})")
+                
+                connected_pages.append({
+                    "id": page_id,
+                    "name": page_data.get("name"),
+                    "category": page_data.get("category"),
+                    "access_token_type": "long_lived_page_token"
+                })
         
-        # Return detailed response
-        logger.info(f"Facebook connection successful. Account ID: {account.id}, Pages: {len(connected_pages)}")
+        db.commit()
         
-        return SuccessResponse(
-            message=f"Facebook account connected successfully with {len(connected_pages)} pages",
-            data={
+        logger.info(f"Successfully connected Facebook account {request.user_id} with {len(connected_pages)} pages")
+        
+        return {
+            "success": True,
+            "message": f"Facebook account connected successfully with long-lived tokens",
+            "data": {
                 "account_id": account.id,
-                "user_account": {
-                    "id": account.id,
-                    "platform_id": account.platform_user_id,
-                    "name": account.display_name or "Personal Profile",
-                    "type": "personal"
-                },
-                "pages": [{
-                    "id": p.id,
-                    "platform_id": p.platform_user_id,
-                    "name": p.display_name,
-                    "category": p.platform_data.get("category", "Page"),
-                    "can_post": p.platform_data.get("can_post", True),
-                    "can_comment": p.platform_data.get("can_comment", True),
-                    "follower_count": p.follower_count or 0,
-                    "profile_picture": p.profile_picture_url
-                } for p in connected_pages],
+                "user_id": request.user_id,
                 "pages_connected": len(connected_pages),
-                "total_accounts": len(connected_pages) + 1  # Include user account
+                "pages": connected_pages,
+                "token_type": "long_lived_user_token",
+                "token_expires_at": expires_at.isoformat() if expires_at else None
             }
-        )
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error connecting Facebook account: {str(e)}", exc_info=True)
-        # Don't expose internal errors to frontend
-        error_message = "Database connection error" if "database" in str(e).lower() else str(e)
+        logger.error(f"Error connecting Facebook account: {e}")
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to connect Facebook account: {error_message}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to connect Facebook account: {str(e)}"
         )
 
 
@@ -221,6 +361,33 @@ async def create_facebook_post(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Facebook access token not found. Please reconnect your account."
             )
+        
+        # Validate and potentially refresh the access token
+        logger.info(f"Validating Facebook token for account {account.id}")
+        validation_result = await facebook_service.validate_and_refresh_token(
+            account.access_token, 
+            account.token_expires_at
+        )
+        
+        if not validation_result["valid"]:
+            if validation_result.get("expired") or validation_result.get("needs_reconnection"):
+                # Mark account as disconnected
+                account.is_connected = False
+                db.commit()
+                
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Facebook login session expired. Please reconnect your account."
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Facebook token validation failed: {validation_result.get('error', 'Unknown error')}"
+                )
+        
+        # Update last sync time since token is valid
+        account.last_sync_at = datetime.utcnow()
+        db.commit()
         
         final_content = request.message
         ai_generated = False
@@ -279,20 +446,43 @@ async def create_facebook_post(
                 post.platform_post_id = facebook_result.get("post_id")
                 post.platform_response = facebook_result
             else:
+                error_msg = facebook_result.get("error", "Unknown Facebook API error")
                 post.status = PostStatus.FAILED
-                post.error_message = facebook_result.get("error", "Unknown Facebook API error")
+                post.error_message = error_msg
+                
+                # Check if the error is due to token expiration
+                if "expired" in error_msg.lower() or "session" in error_msg.lower() or "token" in error_msg.lower():
+                    account.is_connected = False
+                    db.commit()
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Facebook login session expired. Please reconnect your account."
+                    )
             
             db.commit()
             
+        except HTTPException:
+            raise
         except Exception as fb_error:
             logger.error(f"Facebook posting error: {fb_error}")
             post.status = PostStatus.FAILED
             post.error_message = str(fb_error)
             db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Failed to post to Facebook: {str(fb_error)}"
-            )
+            
+            # Check if the error suggests token expiration
+            error_str = str(fb_error).lower()
+            if "expired" in error_str or "session" in error_str or "unauthorized" in error_str:
+                account.is_connected = False
+                db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Facebook login session expired. Please reconnect your account."
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to post to Facebook: {str(fb_error)}"
+                )
         
         # Prepare response
         if post.status == PostStatus.PUBLISHED:
@@ -407,6 +597,395 @@ async def toggle_auto_reply(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to toggle auto-reply: {str(e)}"
+        )
+
+
+@router.post("/facebook/refresh-tokens")
+async def refresh_facebook_tokens(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Validate and refresh Facebook tokens for all connected accounts."""
+    try:
+        from app.services.facebook_service import facebook_service
+        
+        # Get all Facebook accounts for this user
+        facebook_accounts = db.query(SocialAccount).filter(
+            SocialAccount.user_id == current_user.id,
+            SocialAccount.platform == "facebook",
+            SocialAccount.is_connected == True
+        ).all()
+        
+        if not facebook_accounts:
+            return {
+                "success": True,
+                "message": "No Facebook accounts to refresh",
+                "accounts": []
+            }
+        
+        refresh_results = []
+        
+        for account in facebook_accounts:
+            try:
+                logger.info(f"Validating token for account {account.id} ({account.display_name})")
+                
+                validation_result = await facebook_service.validate_and_refresh_token(
+                    account.access_token,
+                    account.token_expires_at
+                )
+                
+                if validation_result["valid"]:
+                    # Token is still valid
+                    account.last_sync_at = datetime.utcnow()
+                    refresh_results.append({
+                        "account_id": account.id,
+                        "platform_user_id": account.platform_user_id,
+                        "name": account.display_name,
+                        "status": "valid",
+                        "message": "Token is valid"
+                    })
+                else:
+                    # Token is invalid or expired
+                    if validation_result.get("expired") or validation_result.get("needs_reconnection"):
+                        account.is_connected = False
+                        refresh_results.append({
+                            "account_id": account.id,
+                            "platform_user_id": account.platform_user_id,
+                            "name": account.display_name,
+                            "status": "expired",
+                            "message": "Token expired - reconnection required",
+                            "needs_reconnection": True
+                        })
+                    else:
+                        refresh_results.append({
+                            "account_id": account.id,
+                            "platform_user_id": account.platform_user_id,
+                            "name": account.display_name,
+                            "status": "error",
+                            "message": validation_result.get("error", "Unknown validation error")
+                        })
+                
+            except Exception as e:
+                logger.error(f"Error validating account {account.id}: {e}")
+                refresh_results.append({
+                    "account_id": account.id,
+                    "platform_user_id": account.platform_user_id,
+                    "name": account.display_name,
+                    "status": "error",
+                    "message": f"Validation error: {str(e)}"
+                })
+        
+        db.commit()
+        
+        # Count results
+        valid_count = len([r for r in refresh_results if r["status"] == "valid"])
+        expired_count = len([r for r in refresh_results if r["status"] == "expired"])
+        error_count = len([r for r in refresh_results if r["status"] == "error"])
+        
+        return {
+            "success": True,
+            "message": f"Token validation complete: {valid_count} valid, {expired_count} expired, {error_count} errors",
+            "summary": {
+                "total_accounts": len(refresh_results),
+                "valid": valid_count,
+                "expired": expired_count,
+                "errors": error_count
+            },
+            "accounts": refresh_results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error refreshing Facebook tokens: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to refresh tokens: {str(e)}"
+        )
+
+
+# Instagram Integration
+@router.post("/instagram/connect")
+async def connect_instagram(
+    request: InstagramConnectRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Connect Instagram Business account through Facebook."""
+    try:
+        logger.info(f"Instagram connect request for user {current_user.id}")
+        
+        # Use the new service to get Instagram accounts with proper error handling
+        try:
+            instagram_accounts = instagram_service.get_facebook_pages_with_instagram(request.access_token)
+        except Exception as service_error:
+            # The service provides detailed troubleshooting messages
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(service_error)
+            )
+        
+        # Save Instagram accounts to database
+        connected_accounts = []
+        for ig_account in instagram_accounts:
+            # Check if account already exists
+            existing_account = db.query(SocialAccount).filter(
+                SocialAccount.user_id == current_user.id,
+                SocialAccount.platform == "instagram",
+                SocialAccount.platform_user_id == ig_account["platform_id"]
+            ).first()
+            
+            if existing_account:
+                # Update existing account
+                existing_account.username = ig_account["username"]
+                existing_account.display_name = ig_account["display_name"] or ig_account["username"]
+                existing_account.is_connected = True
+                existing_account.last_sync_at = datetime.utcnow()
+                existing_account.follower_count = ig_account.get("followers_count", 0)
+                existing_account.profile_picture_url = ig_account.get("profile_picture")
+                existing_account.platform_data = {
+                    "page_id": ig_account.get("page_id"),
+                    "page_name": ig_account.get("page_name"),
+                    "media_count": ig_account.get("media_count", 0),
+                    "page_access_token": ig_account.get("page_access_token")
+                }
+                existing_account.access_token = ig_account.get("page_access_token")
+                db.commit()
+                connected_accounts.append(existing_account)
+                logger.info(f"Updated existing Instagram account: {ig_account['username']} (ID: {ig_account['platform_id']})")
+            else:
+                # Create new account  
+                ig_account_obj = SocialAccount(
+                    user_id=current_user.id,
+                    platform="instagram",
+                    platform_user_id=ig_account["platform_id"],
+                    username=ig_account["username"],
+                    display_name=ig_account["display_name"] or ig_account["username"],
+                    account_type="business",
+                    follower_count=ig_account.get("followers_count", 0),
+                    profile_picture_url=ig_account.get("profile_picture"),
+                    platform_data={
+                        "page_id": ig_account.get("page_id"),
+                        "page_name": ig_account.get("page_name"),
+                        "media_count": ig_account.get("media_count", 0),
+                        "page_access_token": ig_account.get("page_access_token")
+                    },
+                    access_token=ig_account.get("page_access_token"),
+                    is_connected=True,
+                    last_sync_at=datetime.utcnow()
+                )
+                db.add(ig_account_obj)
+                db.commit()
+                db.refresh(ig_account_obj)
+                connected_accounts.append(ig_account_obj)
+                logger.info(f"Created new Instagram account: {ig_account['username']} (ID: {ig_account['platform_id']})")
+        
+        logger.info(f"Instagram connection successful. Connected accounts: {len(connected_accounts)}")
+        
+        return SuccessResponse(
+            message=f"Instagram account(s) connected successfully ({len(connected_accounts)} accounts)",
+            data={
+                "accounts": [{
+                    "platform_id": acc.platform_user_id,
+                    "username": acc.username,
+                    "display_name": acc.display_name,
+                    "page_name": acc.platform_data.get("page_name"),
+                    "followers_count": acc.follower_count or 0,
+                    "media_count": acc.platform_data.get("media_count", 0),
+                    "profile_picture": acc.profile_picture_url
+                } for acc in connected_accounts]
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error connecting Instagram account: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to connect Instagram account: {str(e)}"
+        )
+
+
+@router.post("/instagram/post")
+async def create_instagram_post(
+    request: InstagramPostRequest = None,
+    instagram_user_id: str = None,
+    caption: str = None,
+    image_url: str = None,
+    post_type: str = "manual",
+    use_ai: bool = False,
+    prompt: str = None,
+    image: UploadFile = File(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create and publish an Instagram post."""
+    try:
+        # Handle both JSON and FormData requests
+        if request:
+            # JSON request
+            instagram_user_id = request.instagram_user_id
+            caption = request.caption
+            image_url = request.image_url
+            post_type = request.post_type
+            use_ai = getattr(request, 'use_ai', False)
+            prompt = getattr(request, 'prompt', None)
+        else:
+            # FormData request - parameters are already available
+            pass
+        
+        # Find the Instagram account
+        account = db.query(SocialAccount).filter(
+            SocialAccount.user_id == current_user.id,
+            SocialAccount.platform == "instagram",
+            SocialAccount.platform_user_id == instagram_user_id
+        ).first()
+        
+        if not account:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Instagram account not found"
+            )
+        
+        # Get the page access token from platform_data
+        page_access_token = account.platform_data.get("page_access_token")
+        if not page_access_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Page access token not found. Please reconnect your Instagram account."
+            )
+        
+        # Handle file upload if present
+        final_image_url = image_url
+        if image and image.filename:
+            # TODO: Implement file upload to cloud storage (AWS S3, etc.)
+            # For now, we'll return an error for file uploads
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File upload not yet implemented. Please use image URL instead."
+            )
+        
+        # Create the post using Instagram service
+        if post_type == "post-auto" or use_ai:
+            # AI-generated post
+            post_result = await instagram_service.create_ai_generated_post(
+                instagram_user_id=instagram_user_id,
+                access_token=page_access_token,
+                prompt=prompt or caption,
+                image_url=final_image_url
+            )
+        else:
+            # Manual post
+            try:
+                post_result = instagram_service.create_post(
+                    instagram_user_id=instagram_user_id,
+                    page_access_token=page_access_token,
+                    caption=caption,
+                    image_url=final_image_url
+                )
+            except Exception as service_error:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(service_error)
+                )
+        
+        if not post_result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to create Instagram post: {post_result.get('error', 'Unknown error')}"
+            )
+        
+        # Save post to database
+        post = Post(
+            user_id=current_user.id,
+            social_account_id=account.id,
+            content=post_result.get("generated_caption") or caption,
+            post_type=PostType.IMAGE,
+            status=PostStatus.PUBLISHED,
+            platform_post_id=post_result.get("post_id"),
+            published_at=datetime.utcnow(),
+            media_urls=[final_image_url] if final_image_url else None
+        )
+        
+        db.add(post)
+        db.commit()
+        db.refresh(post)
+        
+        return SuccessResponse(
+            message="Instagram post created successfully",
+            data={
+                "post_id": post_result.get("post_id"),
+                "database_id": post.id,
+                "platform": "instagram",
+                "account_username": account.username,
+                "ai_generated": post_result.get("ai_generated", False),
+                "generated_caption": post_result.get("generated_caption"),
+                "original_prompt": post_result.get("original_prompt")
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating Instagram post: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create Instagram post: {str(e)}"
+        )
+
+
+@router.get("/instagram/media/{instagram_user_id}")
+async def get_instagram_media(
+    instagram_user_id: str,
+    limit: int = 25,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get Instagram media for a connected account."""
+    try:
+        # Find the Instagram account
+        account = db.query(SocialAccount).filter(
+            SocialAccount.user_id == current_user.id,
+            SocialAccount.platform == "instagram",
+            SocialAccount.platform_user_id == instagram_user_id
+        ).first()
+        
+        if not account:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Instagram account not found"
+            )
+        
+        # Get the page access token from platform_data
+        page_access_token = account.platform_data.get("page_access_token")
+        if not page_access_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Page access token not found. Please reconnect your Instagram account."
+            )
+        
+        # Get media from Instagram API using new service
+        media_items = instagram_service.get_user_media(
+            instagram_user_id=instagram_user_id,
+            page_access_token=page_access_token,
+            limit=limit
+        )
+        
+        return SuccessResponse(
+            message=f"Retrieved {len(media_items)} media items",
+            data={
+                "media": media_items,
+                "account_username": account.username,
+                "total_items": len(media_items)
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting Instagram media: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get Instagram media: {str(e)}"
         )
 
 
@@ -656,4 +1235,210 @@ async def debug_facebook_accounts(
             "last_sync_at": acc.last_sync_at,
             "connected_at": acc.connected_at
         } for acc in facebook_accounts]
-    } 
+    }
+
+
+# Scheduled Posts Endpoints
+@router.get("/scheduled-posts")
+async def get_scheduled_posts(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all scheduled posts for the current user."""
+    scheduled_posts = db.query(ScheduledPost).filter(
+        ScheduledPost.user_id == current_user.id
+    ).all()
+    
+    return [{
+        "id": post.id,
+        "prompt": post.prompt,
+        "post_time": post.post_time,
+        "frequency": post.frequency.value,
+        "is_active": post.is_active,
+        "last_executed": post.last_executed.isoformat() if post.last_executed else None,
+        "next_execution": post.next_execution.isoformat() if post.next_execution else None,
+        "social_account": {
+            "id": post.social_account.id,
+            "platform": post.social_account.platform,
+            "display_name": post.social_account.display_name
+        } if post.social_account else None,
+        "created_at": post.created_at.isoformat() if post.created_at else None
+    } for post in scheduled_posts]
+
+
+@router.post("/scheduled-posts")
+async def create_scheduled_post(
+    prompt: str,
+    post_time: str,
+    frequency: str = "daily",
+    social_account_id: int = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new scheduled post."""
+    try:
+        # Validate frequency
+        if frequency not in ["daily", "weekly", "monthly"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid frequency. Must be 'daily', 'weekly', or 'monthly'"
+            )
+        
+        # If no social account specified, find the first Facebook account
+        if not social_account_id:
+            facebook_account = db.query(SocialAccount).filter(
+                SocialAccount.user_id == current_user.id,
+                SocialAccount.platform == "facebook",
+                SocialAccount.is_connected == True
+            ).first()
+            
+            if not facebook_account:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No connected Facebook account found"
+                )
+            social_account_id = facebook_account.id
+        
+        # Calculate next execution time
+        from datetime import datetime, timedelta
+        
+        try:
+            time_parts = post_time.split(":")
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+        except (ValueError, IndexError):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid time format. Use HH:MM"
+            )
+        
+        now = datetime.utcnow()
+        next_exec = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        
+        # If the time has already passed today, schedule for next occurrence
+        if next_exec <= now:
+            if frequency == "daily":
+                # For testing: if time passed today, schedule for next occurrence
+                next_exec += timedelta(days=1)
+            elif frequency == "weekly":
+                next_exec += timedelta(weeks=1)
+            elif frequency == "monthly":
+                next_exec += timedelta(days=30)
+        
+        # FOR TESTING: If scheduled time is more than 2 hours away, set it to 1 minute from now
+        time_diff = next_exec - now
+        if time_diff.total_seconds() > 7200:  # More than 2 hours
+            logger.info(f"Scheduled time is {time_diff.total_seconds()/3600:.1f} hours away, setting to 1 minute for testing")
+            next_exec = now + timedelta(minutes=1)
+        
+        # Create scheduled post
+        scheduled_post = ScheduledPost(
+            user_id=current_user.id,
+            social_account_id=social_account_id,
+            prompt=prompt,
+            post_time=post_time,
+            frequency=FrequencyType(frequency),
+            is_active=True,
+            next_execution=next_exec
+        )
+        
+        db.add(scheduled_post)
+        db.commit()
+        db.refresh(scheduled_post)
+        
+        logger.info(f"Created scheduled post {scheduled_post.id} for user {current_user.id}")
+        
+        return SuccessResponse(
+            message="Scheduled post created successfully",
+            data={
+                "id": scheduled_post.id,
+                "prompt": scheduled_post.prompt,
+                "post_time": scheduled_post.post_time,
+                "frequency": scheduled_post.frequency.value,
+                "next_execution": scheduled_post.next_execution.isoformat()
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating scheduled post: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create scheduled post"
+        )
+
+
+@router.delete("/scheduled-posts/{schedule_id}")
+async def delete_scheduled_post(
+    schedule_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a scheduled post."""
+    try:
+        # Find the scheduled post
+        scheduled_post = db.query(ScheduledPost).filter(
+            ScheduledPost.id == schedule_id,
+            ScheduledPost.user_id == current_user.id
+        ).first()
+        
+        if not scheduled_post:
+            raise HTTPException(
+                status_code=404,
+                detail="Scheduled post not found"
+            )
+        
+        # Delete the scheduled post
+        db.delete(scheduled_post)
+        db.commit()
+        
+        logger.info(f"Deleted scheduled post {schedule_id} for user {current_user.id}")
+        
+        return SuccessResponse(
+            message="Scheduled post deleted successfully",
+            data={"deleted_id": schedule_id}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting scheduled post {schedule_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete scheduled post"
+        )
+
+
+@router.post("/scheduled-posts/trigger")
+async def trigger_scheduler(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Manually trigger the scheduler to check for due posts (for testing)."""
+    try:
+        from app.services.scheduler_service import scheduler_service
+        
+        # Manually process scheduled posts
+        await scheduler_service.process_scheduled_posts()
+        
+        # Get updated scheduled posts
+        scheduled_posts = db.query(ScheduledPost).filter(
+            ScheduledPost.user_id == current_user.id
+        ).all()
+        
+        return SuccessResponse(
+            message="Scheduler triggered successfully",
+            data={
+                "processed_at": datetime.utcnow().isoformat(),
+                "total_scheduled_posts": len(scheduled_posts),
+                "active_schedules": len([p for p in scheduled_posts if p.is_active])
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error triggering scheduler: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to trigger scheduler"
+        )

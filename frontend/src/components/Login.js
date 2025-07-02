@@ -64,108 +64,253 @@ function Login() {
     }
   };
 
+  const containerStyle = {
+    minHeight: '100vh',
+    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '20px',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+  };
+
+  const glassCardStyle = {
+    background: 'rgba(255, 255, 255, 0.25)',
+    backdropFilter: 'blur(20px)',
+    WebkitBackdropFilter: 'blur(20px)',
+    borderRadius: '20px',
+    border: '1px solid rgba(255, 255, 255, 0.3)',
+    boxShadow: '0 25px 45px rgba(0, 0, 0, 0.1)',
+    padding: '40px',
+    width: '100%',
+    maxWidth: '420px',
+    position: 'relative',
+    overflow: 'hidden'
+  };
+
+  const titleStyle = {
+    fontSize: '2rem',
+    fontWeight: '600',
+    color: '#ffffff',
+    textAlign: 'center',
+    marginBottom: '30px',
+    textShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
+  };
+
+  const formGroupStyle = {
+    marginBottom: '20px',
+    position: 'relative'
+  };
+
+  const labelStyle = {
+    display: 'block',
+    fontSize: '0.875rem',
+    fontWeight: '500',
+    color: '#ffffff',
+    marginBottom: '8px',
+    textShadow: '0 1px 2px rgba(0, 0, 0, 0.1)'
+  };
+
+  const inputStyle = {
+    width: '100%',
+    padding: '14px 16px',
+    fontSize: '1rem',
+    border: '1px solid rgba(255, 255, 255, 0.3)',
+    borderRadius: '12px',
+    background: 'rgba(255, 255, 255, 0.2)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    color: '#ffffff',
+    transition: 'all 0.3s ease',
+    boxSizing: 'border-box',
+    outline: 'none'
+  };
+
+  const inputFocusStyle = {
+    ...inputStyle,
+    border: '1px solid rgba(255, 255, 255, 0.6)',
+    background: 'rgba(255, 255, 255, 0.3)',
+    transform: 'translateY(-1px)',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+  };
+
+  const buttonStyle = {
+    width: '100%',
+    padding: '16px',
+    fontSize: '1rem',
+    fontWeight: '600',
+    color: '#ffffff',
+    background: loading 
+      ? 'rgba(255, 255, 255, 0.2)' 
+      : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    border: '1px solid rgba(255, 255, 255, 0.3)',
+    borderRadius: '12px',
+    cursor: loading ? 'not-allowed' : 'pointer',
+    transition: 'all 0.3s ease',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    boxShadow: '0 4px 15px rgba(0, 0, 0, 0.2)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    opacity: loading ? 0.7 : 1
+  };
+
+  const switchButtonStyle = {
+    background: 'none',
+    border: 'none',
+    color: '#ffffff',
+    cursor: 'pointer',
+    textDecoration: 'underline',
+    fontSize: '0.9rem',
+    fontWeight: '500',
+    transition: 'all 0.3s ease',
+    textShadow: '0 1px 2px rgba(0, 0, 0, 0.1)'
+  };
+
+  const messageStyle = {
+    marginTop: '20px',
+    padding: '16px',
+    borderRadius: '12px',
+    fontSize: '0.9rem',
+    fontWeight: '500',
+    textAlign: 'center',
+    background: message.includes('Error') 
+      ? 'rgba(239, 68, 68, 0.2)' 
+      : 'rgba(34, 197, 94, 0.2)',
+    color: '#ffffff',
+    border: `1px solid ${message.includes('Error') 
+      ? 'rgba(239, 68, 68, 0.3)' 
+      : 'rgba(34, 197, 94, 0.3)'}`,
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    textShadow: '0 1px 2px rgba(0, 0, 0, 0.1)'
+  };
+
+  const switchTextStyle = {
+    textAlign: 'center',
+    marginTop: '24px',
+    color: '#ffffff',
+    fontSize: '0.9rem',
+    textShadow: '0 1px 2px rgba(0, 0, 0, 0.1)'
+  };
+
   return (
-    <div style={{ maxWidth: '400px', margin: '50px auto', padding: '20px', border: '1px solid #ddd', borderRadius: '8px' }}>
-      <h2>{isRegister ? 'Register' : 'Login'}</h2>
-      
-      <form onSubmit={handleSubmit}>
-        {isRegister && (
-          <>
-            <div style={{ marginBottom: '15px' }}>
-              <label>Full Name:</label>
-              <input
-                type="text"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                style={{ width: '100%', padding: '8px', marginTop: '5px' }}
-                required
-              />
-            </div>
-            
-            <div style={{ marginBottom: '15px' }}>
-              <label>Username:</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                style={{ width: '100%', padding: '8px', marginTop: '5px' }}
-                required
-              />
-            </div>
-          </>
+    <div style={containerStyle}>
+      <div style={glassCardStyle}>
+        <h2 style={titleStyle}>
+          {isRegister ? 'Create Account' : 'Welcome Back'}
+        </h2>
+        
+        <form onSubmit={handleSubmit}>
+          {isRegister && (
+            <>
+              <div style={formGroupStyle}>
+                <label style={labelStyle}>Full Name</label>
+                <input
+                  type="text"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  style={inputStyle}
+                  onFocus={(e) => Object.assign(e.target.style, inputFocusStyle)}
+                  onBlur={(e) => Object.assign(e.target.style, inputStyle)}
+                  placeholder="Enter your full name"
+                  required
+                />
+              </div>
+              
+              <div style={formGroupStyle}>
+                <label style={labelStyle}>Username</label>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  style={inputStyle}
+                  onFocus={(e) => Object.assign(e.target.style, inputFocusStyle)}
+                  onBlur={(e) => Object.assign(e.target.style, inputStyle)}
+                  placeholder="Choose a username"
+                  required
+                />
+              </div>
+            </>
+          )}
+          
+          <div style={formGroupStyle}>
+            <label style={labelStyle}>Email Address</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              style={inputStyle}
+              onFocus={(e) => Object.assign(e.target.style, inputFocusStyle)}
+              onBlur={(e) => Object.assign(e.target.style, inputStyle)}
+              placeholder="Enter your email"
+              required
+            />
+          </div>
+          
+          <div style={formGroupStyle}>
+            <label style={labelStyle}>Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={inputStyle}
+              onFocus={(e) => Object.assign(e.target.style, inputFocusStyle)}
+              onBlur={(e) => Object.assign(e.target.style, inputStyle)}
+              placeholder="Enter your password"
+              required
+            />
+          </div>
+          
+          <button
+            type="submit"
+            disabled={loading}
+            style={buttonStyle}
+            onMouseEnter={(e) => {
+              if (!loading) {
+                e.target.style.transform = 'translateY(-2px)';
+                e.target.style.boxShadow = '0 6px 20px rgba(0, 0, 0, 0.3)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!loading) {
+                e.target.style.transform = 'translateY(0)';
+                e.target.style.boxShadow = '0 4px 15px rgba(0, 0, 0, 0.2)';
+              }
+            }}
+          >
+            {loading ? 'Processing...' : (isRegister ? 'Create Account' : 'Sign In')}
+          </button>
+        </form>
+        
+        <div style={switchTextStyle}>
+          {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
+          <button
+            type="button"
+            onClick={() => {
+              setIsRegister(!isRegister);
+              setMessage('');
+            }}
+            style={switchButtonStyle}
+            onMouseEnter={(e) => {
+              e.target.style.color = '#f0f8ff';
+              e.target.style.textShadow = '0 0 8px rgba(255, 255, 255, 0.5)';
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.color = '#ffffff';
+              e.target.style.textShadow = '0 1px 2px rgba(0, 0, 0, 0.1)';
+            }}
+          >
+            {isRegister ? 'Sign In' : 'Create Account'}
+          </button>
+        </div>
+        
+        {message && (
+          <div style={messageStyle}>
+            {message}
+          </div>
         )}
-        
-        <div style={{ marginBottom: '15px' }}>
-          <label>Email:</label>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={{ width: '100%', padding: '8px', marginTop: '5px' }}
-            required
-          />
-        </div>
-        
-        <div style={{ marginBottom: '15px' }}>
-          <label>Password:</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{ width: '100%', padding: '8px', marginTop: '5px' }}
-            required
-          />
-        </div>
-        
-        <button
-          type="submit"
-          disabled={loading}
-          style={{
-            width: '100%',
-            padding: '10px',
-            backgroundColor: '#007bff',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: loading ? 'not-allowed' : 'pointer'
-          }}
-        >
-          {loading ? 'Processing...' : (isRegister ? 'Register' : 'Login')}
-        </button>
-      </form>
-      
-      <p style={{ textAlign: 'center', marginTop: '15px' }}>
-        {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
-        <button
-          type="button"
-          onClick={() => {
-            setIsRegister(!isRegister);
-            setMessage('');
-          }}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: '#007bff',
-            cursor: 'pointer',
-            textDecoration: 'underline'
-          }}
-        >
-          {isRegister ? 'Login' : 'Register'}
-        </button>
-      </p>
-      
-      {message && (
-        <div style={{
-          marginTop: '15px',
-          padding: '10px',
-          backgroundColor: message.includes('Error') ? '#f8d7da' : '#d4edda',
-          color: message.includes('Error') ? '#721c24' : '#155724',
-          border: `1px solid ${message.includes('Error') ? '#f5c6cb' : '#c3e6cb'}`,
-          borderRadius: '4px'
-        }}>
-          {message}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

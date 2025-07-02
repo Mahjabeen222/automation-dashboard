@@ -52,7 +52,12 @@ class ApiClient {
       clearTimeout(timeoutId);
       
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+        let errorData = {};
+        try {
+          errorData = await response.json();
+        } catch (e) {
+          console.warn('Failed to parse error response as JSON');
+        }
         
         // Handle 401 Unauthorized specifically
         if (response.status === 401) {
@@ -61,7 +66,34 @@ class ApiClient {
           throw new Error('Could not validate credentials - please log in again');
         }
         
-        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+        // Handle validation errors (422)
+        if (response.status === 422 && errorData.detail) {
+          // Handle Pydantic validation errors
+          if (Array.isArray(errorData.detail)) {
+            const validationErrors = errorData.detail.map(err => 
+              `${err.loc.join('.')}: ${err.msg}`
+            ).join(', ');
+            throw new Error(`Validation Error: ${validationErrors}`);
+          } else {
+            throw new Error(errorData.detail);
+          }
+        }
+        
+        // Extract error message properly
+        let errorMessage = 'Unknown error occurred';
+        if (typeof errorData === 'string') {
+          errorMessage = errorData;
+        } else if (errorData.error) {
+          errorMessage = errorData.error;
+        } else if (errorData.detail) {
+          errorMessage = errorData.detail;
+        } else if (errorData.message) {
+          errorMessage = errorData.message;
+        } else {
+          errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+        }
+        
+        throw new Error(errorMessage);
       }
 
       const responseData = await response.json();
@@ -118,6 +150,10 @@ class ApiClient {
   }
 
   // Social Media endpoints (Replace Make.com webhooks)
+  async getFacebookStatus() {
+    return this.request('/api/social/facebook/status');
+  }
+
   async connectFacebook(accessToken, userId, pages = []) {
     return this.request('/api/social/facebook/connect', {
       method: 'POST',
@@ -125,6 +161,66 @@ class ApiClient {
         access_token: accessToken,
         user_id: userId,
         pages: pages,
+      }),
+    });
+  }
+
+  async refreshFacebookTokens() {
+    return this.request('/api/social/facebook/refresh-tokens', {
+      method: 'POST',
+    });
+  }
+
+  async logoutFacebook() {
+    return this.request('/api/social/facebook/logout', {
+      method: 'POST',
+    });
+  }
+
+  // Scheduling endpoints
+  async createScheduledPost(scheduleData) {
+    const params = new URLSearchParams({
+      prompt: scheduleData.prompt,
+      post_time: scheduleData.post_time,
+      frequency: scheduleData.frequency || 'daily',
+      social_account_id: scheduleData.social_account_id.toString()
+    });
+    
+    return this.request(`/api/social/scheduled-posts?${params.toString()}`, {
+      method: 'POST',
+    });
+  }
+
+  async getScheduledPosts() {
+    return this.request('/api/social/scheduled-posts');
+  }
+
+  async updateScheduledPost(scheduleId, scheduleData) {
+    return this.request(`/api/social/scheduled-posts/${scheduleId}`, {
+      method: 'PUT',
+      body: JSON.stringify(scheduleData),
+    });
+  }
+
+  async deleteScheduledPost(scheduleId) {
+    return this.request(`/api/social/scheduled-posts/${scheduleId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getSocialPosts(platform = null, limit = 50) {
+    const params = new URLSearchParams();
+    if (platform) params.append('platform', platform);
+    params.append('limit', limit.toString());
+    
+    return this.request(`/api/social/posts?${params.toString()}`);
+  }
+
+  async connectInstagram(accessToken) {
+    return this.request('/api/social/instagram/connect', {
+      method: 'POST',
+      body: JSON.stringify({
+        access_token: accessToken
       }),
     });
   }
@@ -140,6 +236,78 @@ class ApiClient {
         image: image,
       }),
     });
+  }
+
+  // Instagram post creation
+  async createInstagramPost(data) {
+    // Accept either FormData or an object for flexibility
+    if (data instanceof FormData) {
+      // FormData for file uploads - use custom headers to avoid CORS issues
+      const url = `${this.baseURL}/api/social/instagram/post`;
+      const config = {
+        method: 'POST',
+        body: data,
+      };
+
+      // Add authorization header manually for FormData
+      if (this.token) {
+        config.headers = {
+          'Authorization': `Bearer ${this.token}`
+        };
+      }
+
+      try {
+        console.log(`🔍 DEBUG: FormData upload to ${url}`);
+        const response = await fetch(url, config);
+        
+        if (!response.ok) {
+          let errorData = {};
+          try {
+            errorData = await response.json();
+          } catch (e) {
+            console.warn('Failed to parse error response as JSON');
+          }
+          
+          let errorMessage = 'Unknown error occurred';
+          if (typeof errorData === 'string') {
+            errorMessage = errorData;
+          } else if (errorData.error) {
+            errorMessage = errorData.error;
+          } else if (errorData.detail) {
+            errorMessage = errorData.detail;
+          } else {
+            errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+          }
+          
+          throw new Error(errorMessage);
+        }
+
+        const responseData = await response.json();
+        console.log(`FormData upload response:`, responseData);
+        return responseData;
+      } catch (error) {
+        console.error(`FormData upload error:`, error);
+        throw error;
+      }
+    } else {
+      // JSON for text-only posts or AI generation
+      return this.request('/api/social/instagram/post', {
+        method: 'POST',
+        body: JSON.stringify({
+          instagram_user_id: data.instagram_user_id,
+          caption: data.caption,
+          image_url: data.image_url,
+          post_type: data.post_type || 'manual',
+          use_ai: data.use_ai || false,
+          prompt: data.prompt
+        }),
+      });
+    }
+  }
+
+  // Get Instagram media
+  async getInstagramMedia(instagramUserId, limit = 25) {
+    return this.request(`/api/social/instagram/media/${instagramUserId}?limit=${limit}`);
   }
 
   // REPLACE Make.com auto-reply webhook
@@ -182,7 +350,7 @@ class ApiClient {
 
   // Generate content using Groq API
   async generateContent(prompt) {
-    return this.request('/ai/generate-content', {
+    return this.request('/api/ai/generate-content', {
       method: 'POST',
       body: JSON.stringify({
         prompt: prompt,

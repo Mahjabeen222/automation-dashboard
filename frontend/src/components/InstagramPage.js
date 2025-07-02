@@ -1,453 +1,655 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
-import './SocialMediaPage.css';
 import apiClient from '../services/apiClient';
+import { useAuth } from '../contexts/AuthContext';
+import './InstagramPage.css';
 
-function InstagramPage() {
+const InstagramPage = () => {
   const navigate = useNavigate();
-  const { user, isAuthenticated: authIsAuthenticated } = useAuth();
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState('');
-  const [instagramConnected, setInstagramConnected] = useState(false);
-  
-  // Form data state
-  const [formData, setFormData] = useState({
-    caption: '',
-    image: null,
-    hashtags: ''
-  });
+  const { isAuthenticated, loading: authLoading, user } = useAuth();
+  const [isConnected, setIsConnected] = useState(false);
+  const [instagramAccounts, setInstagramAccounts] = useState([]);
+  const [selectedAccount, setSelectedAccount] = useState('');
+  const [postContent, setPostContent] = useState('');
+  const [postImage, setPostImage] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [sdkLoaded, setSdkLoaded] = useState(false);
+  const [fbAccessToken, setFbAccessToken] = useState(null);
+  const [generatingAI, setGeneratingAI] = useState(false);
+  const [userMedia, setUserMedia] = useState([]);
+  const [loadingMedia, setLoadingMedia] = useState(false);
+  const [activeTab, setActiveTab] = useState('connect');
 
-  // Icon Components
-  const ImageIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-      <circle cx="8.5" cy="8.5" r="1.5"></circle>
-      <polyline points="21,15 16,10 5,21"></polyline>
-    </svg>
-  );
 
-  const MessageIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-    </svg>
-  );
+  // Instagram App ID (different from Facebook App ID)
+  const INSTAGRAM_APP_ID = process.env.REACT_APP_INSTAGRAM_APP_ID || '697225659875731';
 
-  const HashIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <line x1="4" y1="9" x2="20" y2="9"></line>
-      <line x1="4" y1="15" x2="20" y2="15"></line>
-      <line x1="10" y1="3" x2="8" y2="21"></line>
-      <line x1="16" y1="3" x2="14" y2="21"></line>
-    </svg>
-  );
-
-  const RocketIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path>
-      <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path>
-      <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"></path>
-      <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"></path>
-    </svg>
-  );
-
-  const LockIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-      <circle cx="12" cy="16" r="1"></circle>
-      <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-    </svg>
-  );
-
-  const handleInputChange = (e) => {
-    const { name, value, files } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: files ? files[0] : value
-    }));
-  };
-
-  const handleInstagramConnect = async () => {
-    if (!instagramConnected) {
-      // Check HTTPS requirement
-      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-        setConnectionStatus('❌ Instagram login requires HTTPS. Please use https://localhost:3001 or deploy with HTTPS');
-        return;
-      }
-
-      // Check backend authentication
-      try {
-        await apiClient.getCurrentUser();
-      } catch (error) {
-        setConnectionStatus('❌ Your session has expired. Please log out and log back in to connect Instagram.');
-        setTimeout(() => {
-          navigate('/');
-        }, 3000);
-        return;
-      }
-
-      setIsConnecting(true);
-      setConnectionStatus('📦 Loading Facebook SDK for Instagram...');
-
-      try {
-        await loadFacebookSDK();
-
-        if (!window.FB || typeof window.FB.login !== 'function') {
-          setConnectionStatus('❌ Facebook SDK failed to load. Please refresh the page and try again.');
-          setIsConnecting(false);
-          return;
+  useEffect(() => {
+    const checkLoginStatus = () => {
+      if (!window.FB || !isAuthenticated) return;
+      
+      window.FB.getLoginStatus((response) => {
+        if (response.status === 'connected') {
+          setFbAccessToken(response.authResponse.accessToken);
+          setMessage('Instagram: Using existing Facebook login session');
+          // Auto-connect Instagram accounts if we have a token
+          handleConnectInstagram(response.authResponse.accessToken);
+        } else {
+          setMessage('Instagram: Please connect your Facebook account to continue');
         }
+      });
+    };
 
-        setConnectionStatus('🔐 Connecting to Instagram via Facebook...');
-
-        window.FB.login((response) => {
-          if (response.status === 'connected' && response.authResponse?.accessToken) {
-            (async () => {
-              try {
-                setConnectionStatus('✅ Facebook login successful! Checking Instagram connection...');
-                
-                const accessToken = response.authResponse.accessToken;
-                const userId = response.authResponse.userID;
-
-                // Check for Instagram accounts linked to Facebook Pages
-                const instagramAccountsResponse = await new Promise((resolve, reject) => {
-                  window.FB.api('/me/accounts', {
-                    access_token: accessToken,
-                    fields: 'id,name,instagram_business_account{id,username,profile_picture_url}'
-                  }, (response) => {
-                    if (response.error) {
-                      reject(new Error(`${response.error.message} (Code: ${response.error.code})`));
-                    } else {
-                      resolve(response);
-                    }
-                  });
-                });
-
-                // Filter pages that have Instagram accounts
-                const pagesWithInstagram = instagramAccountsResponse.data?.filter(
-                  page => page.instagram_business_account
-                ) || [];
-
-                if (pagesWithInstagram.length === 0) {
-                  setConnectionStatus('❌ No Instagram Business accounts found linked to your Facebook Pages. Please link an Instagram Business account to a Facebook Page first.');
-                  setIsConnecting(false);
-                  return;
-                }
-
-                // For now, use the first Instagram account found
-                const instagramAccount = pagesWithInstagram[0].instagram_business_account;
-                
-                setConnectionStatus('✅ Connected to Instagram successfully!');
-                setInstagramConnected(true);
-                setIsConnecting(false);
-
-                // Store Instagram account info for posting
-                // You might want to store this in state or context
-                console.log('Connected Instagram account:', instagramAccount);
-
-              } catch (error) {
-                console.error('[Instagram.login] Error in Instagram connection:', error);
-                setConnectionStatus('❌ Error during Instagram setup: ' + (error.message || 'Unknown error'));
-                setIsConnecting(false);
-                setInstagramConnected(false);
-              }
-            })();
-          } else {
-            if (response.status === 'not_authorized') {
-              setConnectionStatus('❌ Please authorize the app to continue and ensure you have Instagram Business accounts linked to your Facebook Pages.');
-            } else {
-              setConnectionStatus('❌ Instagram login cancelled or failed');
-            }
-            setIsConnecting(false);
-          }
-        }, {
-          scope: [
-            'pages_show_list',
-            'instagram_basic',
-            'instagram_manage_comments',
-            'instagram_manage_insights',
-            'instagram_content_publish',
-            'pages_read_engagement',
-            'pages_manage_posts'
-          ].join(','),
-          enable_profile_selector: true,
-          return_scopes: true,
-          auth_type: 'rerequest',
-          display: 'popup'
-        });
-      } catch (error) {
-        console.error('Instagram login error:', error);
-        setConnectionStatus('❌ Instagram login failed: ' + error.message);
-        setIsConnecting(false);
-      }
-      return;
-    }
-
-    // Instagram posting logic (when already connected)
-    // Validate required fields
-    if (!formData.caption || formData.caption.trim() === '') {
-      setConnectionStatus('❌ Please enter a caption');
-      return;
-    }
-
-    if (!formData.image) {
-      setConnectionStatus('❌ Please select an image for Instagram post');
-      return;
-    }
-
-    try {
-      setIsConnecting(true);
-      setConnectionStatus('🚀 Posting to Instagram...');
-      
-      // Instagram posting logic will go here
-      // For now, simulate the posting process
-      setTimeout(() => {
-        setConnectionStatus('✅ Posted to Instagram successfully!');
-        
-        // Reset form after successful submission
-        setFormData({
-          caption: '',
-          image: null,
-          hashtags: ''
-        });
-        setIsConnecting(false);
-      }, 3000);
-      
-    } catch (error) {
-      console.error('Instagram post creation error:', error);
-      setConnectionStatus('❌ Failed to create Instagram post: ' + (error.message || 'Unknown error'));
-      setIsConnecting(false);
-    }
-  };
-
-  // Load Facebook SDK (reuse the same function as FacebookPage)
-  const loadFacebookSDK = () => {
-    return new Promise((resolve, reject) => {
-      // Clean up any existing SDK
-      const existingScript = document.getElementById('facebook-jssdk');
-      if (existingScript) {
-        existingScript.remove();
-      }
+    const initializeFacebookSDK = () => {
+      // Always reinitialize with Instagram App ID to avoid conflicts
       if (window.FB) {
-        delete window.FB;
+        // SDK already exists, reinitialize with Instagram App ID
+        window.FB.init({
+          appId: INSTAGRAM_APP_ID,
+          cookie: true,
+          xfbml: true,
+          version: 'v18.0'
+        });
+        setSdkLoaded(true);
+        checkLoginStatus();
+        return;
       }
-      if (window.fbAsyncInit) {
-        delete window.fbAsyncInit;
-      }
-      
-      window.fbAsyncInit = function () {
-        try {
-          window.FB.init({
-            appId: process.env.REACT_APP_INSTAGRAM_APP_ID || '24293410896962741',
-            cookie: true,
-            xfbml: true,
-            version: 'v19.0'
-          });
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
+
+      // Load FB SDK for the first time
+      window.fbAsyncInit = function() {
+        window.FB.init({
+          appId: INSTAGRAM_APP_ID,
+          cookie: true,
+          xfbml: true,
+          version: 'v18.0'
+        });
+        setSdkLoaded(true);
+        checkLoginStatus();
       };
 
-      const script = document.createElement('script');
-      script.id = 'facebook-jssdk';
-      script.src = 'https://connect.facebook.net/en_US/sdk.js';
-      script.async = true;
-      script.defer = true;
-      script.crossOrigin = 'anonymous';
-      script.onerror = () => reject(new Error('Failed to load Facebook SDK script'));
-      document.body.appendChild(script);
+      // Load the SDK script
+      (function(d, s, id) {
+        var js, fjs = d.getElementsByTagName(s)[0];
+        if (d.getElementById(id)) return;
+        js = d.createElement(s); js.id = id;
+        js.src = "https://connect.facebook.net/en_US/sdk.js";
+        fjs.parentNode.insertBefore(js, fjs);
+      }(document, 'script', 'facebook-jssdk'));
+    };
+
+    initializeFacebookSDK();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [INSTAGRAM_APP_ID, isAuthenticated]);
+
+  const handleConnectInstagram = async (accessToken = fbAccessToken) => {
+    if (!isAuthenticated) {
+      setMessage('Please log in to your account first before connecting Instagram.');
+      setLoading(false);
+      return;
+    }
+
+    if (!accessToken) {
+      setMessage('No access token available. Please log in with Facebook first.');
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      setMessage('Fetching Instagram Business accounts...');
+      
+      const response = await apiClient.connectInstagram(accessToken);
+
+      if (response.success && response.data && response.data.accounts && response.data.accounts.length > 0) {
+        // Map the backend response to match our frontend expectations
+        const mappedAccounts = response.data.accounts.map(account => ({
+          id: account.platform_id,
+          username: account.username,
+          name: account.display_name || account.page_name,
+          followers_count: account.followers_count || 0,
+          media_count: account.media_count || 0,
+          profile_picture_url: account.profile_picture
+        }));
+        
+        setInstagramAccounts(mappedAccounts);
+        setIsConnected(true);
+        setActiveTab('post');
+        setMessage(`Found ${mappedAccounts.length} Instagram Business account(s)!`);
+        
+        // Auto-select first account if only one
+        if (mappedAccounts.length === 1) {
+          setSelectedAccount(mappedAccounts[0].id);
+          loadUserMedia(mappedAccounts[0].id);
+        }
+      } else {
+        setMessage('No Instagram Business accounts found. Make sure you have an Instagram Business account connected to your Facebook Page.');
+      }
+    } catch (error) {
+      console.error('Instagram connection error:', error);
+      
+      // Extract and display error message
+      let errorMessage = 'Unknown error occurred';
+      
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else if (typeof error === 'string') {
+        errorMessage = error;
+      } else if (error && typeof error === 'object') {
+        // Handle various error object formats
+        errorMessage = error.message || error.detail || error.error || JSON.stringify(error);
+      }
+      
+      // Display error with proper formatting for troubleshooting steps
+      setMessage(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFacebookLogin = () => {
+    if (!window.FB) {
+      setMessage('Facebook SDK not loaded');
+      return;
+    }
+
+    setLoading(true);
+    setMessage('Initiating Instagram OAuth via Facebook...');
+
+    // Instagram requires specific permissions
+    window.FB.login((response) => {
+      if (response.status === 'connected') {
+        const accessToken = response.authResponse.accessToken;
+        setFbAccessToken(accessToken);
+        setMessage('Facebook login successful! Connecting Instagram accounts...');
+        handleConnectInstagram(accessToken);
+      } else {
+        setMessage('Facebook login failed or was cancelled');
+        setLoading(false);
+      }
+    }, {
+      scope: 'pages_show_list,instagram_basic,instagram_content_publish,pages_read_engagement'
     });
   };
 
-  if (!authIsAuthenticated) {
+  const handleGenerateAIPost = async () => {
+    if (!selectedAccount) {
+      setMessage('Please select an Instagram account first');
+      return;
+    }
+
+    setGeneratingAI(true);
+    setMessage('Generating AI post...');
+
+    try {
+      const response = await apiClient.createInstagramPost({
+        instagram_user_id: selectedAccount,
+        use_ai: true,
+        prompt: 'Create an engaging Instagram post',
+        post_type: 'post-auto'
+      });
+
+      if (response.success) {
+        setPostContent(response.data?.generated_caption || response.ai_content || '');
+        setMessage('AI post generated successfully!');
+      } else {
+        setMessage(`Failed to generate AI post: ${response.error}`);
+      }
+    } catch (error) {
+      console.error('AI generation error:', error);
+      setMessage(`Error generating AI post: ${error.message || 'Unknown error'}`);
+    } finally {
+      setGeneratingAI(false);
+    }
+  };
+
+  const handleCreatePost = async () => {
+    if (!selectedAccount || !postContent.trim()) {
+      setMessage('Please select an account and enter post content');
+      return;
+    }
+
+    setLoading(true);
+    setMessage('Creating Instagram post...');
+
+    try {
+      // Debug: Log the backend connection first
+      console.log('🔍 DEBUG: Testing backend connection...');
+      const testConnection = await apiClient.testConnection();
+      console.log('🔍 DEBUG: Backend connection test result:', testConnection);
+      
+      if (!testConnection) {
+        throw new Error('Backend server is not responding. Please make sure the backend is running on http://localhost:8000');
+      }
+
+      let response;
+      
+      if (postImage) {
+        // For now, file uploads are not supported - show message
+        setMessage('File uploads are not yet supported. Please use text-only posts for now.');
+        setLoading(false);
+        return;
+      } else {
+        // Use JSON for text-only posts
+        console.log('🔍 DEBUG: Sending JSON request without image...');
+        response = await apiClient.createInstagramPost({
+          instagram_user_id: selectedAccount,
+          caption: postContent,
+          use_ai: false,
+          post_type: 'manual'
+        });
+      }
+
+      if (response.success) {
+        setMessage('Instagram post created successfully!');
+        setPostContent('');
+        setPostImage(null);
+        // Refresh media after posting
+        if (selectedAccount) {
+          loadUserMedia(selectedAccount);
+        }
+      } else {
+        setMessage(`Failed to create post: ${response.error}`);
+      }
+    } catch (error) {
+      console.error('Post creation error:', error);
+      
+      // Enhanced error messaging
+      let errorMessage = 'Unknown error occurred';
+      
+      if (error.message) {
+        errorMessage = error.message;
+      } else if (error.name === 'TypeError' && error.message?.includes('Failed to fetch')) {
+        errorMessage = 'Backend connection failed. Please check:\n1. Backend server is running on http://localhost:8000\n2. CORS is properly configured\n3. Your network connection is working';
+      }
+      
+      setMessage(`Error creating post: ${errorMessage}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadUserMedia = async (instagramUserId) => {
+    setLoadingMedia(true);
+    try {
+      const media = await apiClient.getInstagramMedia(instagramUserId);
+      setUserMedia(media || []);
+    } catch (error) {
+      console.error('Error loading media:', error);
+      setMessage(`Error loading media: ${error.response?.data?.detail || error.message}`);
+    } finally {
+      setLoadingMedia(false);
+    }
+  };
+
+  const handleAccountChange = (accountId) => {
+    setSelectedAccount(accountId);
+    if (accountId) {
+      loadUserMedia(accountId);
+    }
+  };
+
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setPostImage(file);
+    }
+  };
+
+  const handleLogout = () => {
+    if (window.FB) {
+      window.FB.logout(() => {
+        setIsConnected(false);
+        setInstagramAccounts([]);
+        setSelectedAccount('');
+        setFbAccessToken(null);
+        setUserMedia([]);
+        setActiveTab('connect');
+        setMessage('Logged out successfully');
+      });
+    }
+  };
+
+  if (authLoading) {
     return (
-      <div className="page-container">
-        <div className="auth-required">
-          <h1>Please login to continue</h1>
-          <p>You need to be logged in to use Instagram automation features.</p>
-          <button onClick={() => navigate('/')} className="btn primary">
-            Go to Login
+      <div className="instagram-container">
+        <div className="loading-screen">
+          <div className="loading-spinner"></div>
+          <p>Checking authentication...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="instagram-container">
+        <div className="header-section">
+          <button onClick={() => navigate('/')} className="back-button">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+            Back to Dashboard
           </button>
+          <h1>Instagram Management</h1>
+          <p>Please log in to your account to connect and manage Instagram.</p>
+        </div>
+        <div className="auth-required">
+          <div className="auth-icon">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <circle cx="12" cy="16" r="1"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+          </div>
+          <h2>Authentication Required</h2>
+          <p>You need to be logged in to use Instagram features. Please log in first.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!sdkLoaded) {
+    return (
+      <div className="instagram-container">
+        <div className="loading-screen">
+          <div className="loading-spinner"></div>
+          <p>Loading Instagram SDK...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="page-container">
-      <header className="page-header">
-        <button onClick={() => navigate('/')} className="back-btn">
+    <div className="instagram-container">
+      <div className="header-section">
+        <button onClick={() => navigate('/')} className="back-button">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="15,18 9,12 15,6"></polyline>
+            <path d="M19 12H5M12 19l-7-7 7-7"/>
           </svg>
           Back to Dashboard
         </button>
-        <div className="page-title-section">
-          <h1 className="page-title">Instagram Automation</h1>
-          <p className="page-subtitle">Connected to FastAPI Backend • User: {user?.full_name || user?.username}</p>
+        <div className="header-content">
+          <div className="header-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+            </svg>
+          </div>
+          <div className="header-text">
+            <h1>Instagram Management</h1>
+            <p>Connect and manage your Instagram Business accounts</p>
+          </div>
         </div>
-      </header>
+      </div>
 
-      <main className="page-main">
-        <div className="platforms-container">
-          <div className="platforms-grid">
-            <div className={`platform-card ${instagramConnected ? 'authenticated' : ''}`}
-                 style={{
-                   '--platform-gradient': 'linear-gradient(135deg, #405DE6 0%, #5851DB 25%, #833AB4 50%, #C13584 75%, #E1306C 100%)',
-                   '--platform-border': '#E1306C'
-                 }}>
-              <div className="platform-icon">
-                <svg width="64" height="64" viewBox="0 0 24 24" fill="url(#instagram-gradient)">
-                  <defs>
-                    <linearGradient id="instagram-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stopColor="#405DE6"/>
-                      <stop offset="25%" stopColor="#5851DB"/>
-                      <stop offset="50%" stopColor="#833AB4"/>
-                      <stop offset="75%" stopColor="#C13584"/>
-                      <stop offset="100%" stopColor="#E1306C"/>
-                    </linearGradient>
-                  </defs>
-                  <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
-                </svg>
-              </div>
-              
-              <div className="platform-content">
-                <h3 className="platform-name">Instagram</h3>
-                <p className="platform-description">
-                  {instagramConnected ? 'Connected to Instagram' : 'Not Connected'}
-                </p>
-                
-                {instagramConnected ? (
-                  <div className="platform-form">
-                    <div className="form-group">
-                      <label className="form-label">
-                        <ImageIcon />
-                        Upload Image
-                      </label>
-                      <div className="image-upload-wrapper">
-                        <input
-                          type="file"
-                          name="image"
-                          accept="image/*"
-                          onChange={handleInputChange}
-                          className="image-input"
-                          id="image-upload"
-                        />
-                        <label htmlFor="image-upload" className="image-upload-label">
-                          <ImageIcon />
-                          {formData.image ? formData.image.name : 'Choose an image'}
-                        </label>
-                      </div>
-                    </div>
-                    
-                    <div className="form-group">
-                      <label className="form-label">
-                        <MessageIcon />
-                        Caption
-                      </label>
-                      <textarea
-                        name="caption"
-                        placeholder="Write a caption for your Instagram post..."
-                        value={formData.caption}
-                        onChange={handleInputChange}
-                        className="glass-input glass-textarea enhanced-textarea"
-                        rows="4"
-                      />
-                    </div>
+      {message && (
+        <div className={`status-message ${message.includes('Error') || message.includes('Failed') ? 'error' : message.includes('success') ? 'success' : 'info'}`}>
+          <div className="message-content">
+            <span className="message-text">{message}</span>
+          </div>
+        </div>
+      )}
 
-                    <div className="form-group">
-                      <label className="form-label">
-                        <HashIcon />
-                        Hashtags
-                      </label>
-                      <input
-                        type="text"
-                        name="hashtags"
-                        placeholder="#instagram #automation #social"
-                        value={formData.hashtags}
-                        onChange={handleInputChange}
-                        className="glass-input"
-                      />
-                    </div>
+      <div className="main-content">
+        <div className="tab-navigation">
+          <button 
+            className={`tab-button ${activeTab === 'connect' ? 'active' : ''}`}
+            onClick={() => setActiveTab('connect')}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M16 4h4v4M16 4l4 4M8 20H4v-4M8 20l-4-4"/>
+            </svg>
+            Connect Account
+          </button>
+
+          <button 
+            className={`tab-button ${activeTab === 'post' ? 'active' : ''}`}
+            onClick={() => setActiveTab('post')}
+            disabled={!isConnected}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 3h18v18H3zM9 9h6v6H9z"/>
+            </svg>
+            Create Post
+          </button>
+
+          <button 
+            className={`tab-button ${activeTab === 'media' ? 'active' : ''}`}
+            onClick={() => setActiveTab('media')}
+            disabled={!isConnected || !selectedAccount}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="9" cy="9" r="2"/>
+              <path d="M21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+            </svg>
+            Media Gallery
+          </button>
+        </div>
+
+        <div className="tab-content">
+          {activeTab === 'connect' && (
+            <div className="connect-section">
+              {!isConnected ? (
+                <div className="connection-card">
+                  <div className="connection-icon">
+                    <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069z"/>
+                      <circle cx="12" cy="12" r="4"/>
+                      <path d="M17.5 6.5h.01"/>
+                    </svg>
                   </div>
-                ) : (
-                  <div className="auth-prompt">
-                    <p className="auth-description">
-                      <LockIcon />
-                      Please authenticate with Instagram to start posting
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              <div className="platform-actions">
-                {instagramConnected ? (
+                  <h2>Connect Instagram Account</h2>
+                  <p>Connect your Instagram Business account through Facebook to start posting and managing content.</p>
+                  
                   <button 
-                    className="connect-btn"
-                    onClick={handleInstagramConnect}
-                    disabled={isConnecting}
+                    onClick={handleFacebookLogin} 
+                    disabled={loading}
+                    className="connect-main-button"
                   >
-                    {isConnecting ? (
+                    {loading ? (
                       <>
-                        <div className="loading-spinner" />
-                        Posting...
-                      </>
-                    ) : (
-                      <>
-                        <RocketIcon />
-                        Post to Instagram
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <polyline points="9,18 15,12 9,6"></polyline>
-                        </svg>
-                      </>
-                    )}
-                  </button>
-                ) : (
-                  <button 
-                    className="connect-btn"
-                    onClick={handleInstagramConnect}
-                    disabled={isConnecting}
-                  >
-                    {isConnecting ? (
-                      <>
-                        <div className="loading-spinner" />
+                        <div className="button-spinner"></div>
                         Connecting...
                       </>
                     ) : (
                       <>
-                        <LockIcon />
-                        Connect Instagram
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <polyline points="9,18 15,12 9,6"></polyline>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
                         </svg>
+                        Connect via Facebook
                       </>
                     )}
                   </button>
-                )}
-              </div>
+
+                  <div className="requirements-card">
+                    <h3>Requirements</h3>
+                    <ul>
+                      <li>Instagram Business or Creator account</li>
+                      <li>Connected to a Facebook Page</li>
+                      <li>Admin access to the Facebook Page</li>
+                    </ul>
+                  </div>
+                </div>
+              ) : (
+                <div className="connected-accounts">
+                  <div className="accounts-header">
+                    <h2>Connected Instagram Accounts</h2>
+                    <button onClick={handleLogout} className="logout-button">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                        <polyline points="16,17 21,12 16,7"/>
+                        <line x1="21" y1="12" x2="9" y2="12"/>
+                      </svg>
+                      Disconnect
+                    </button>
+                  </div>
+                  
+                  <div className="accounts-grid">
+                    {instagramAccounts.map(account => (
+                      <div 
+                        key={account.id} 
+                        className={`account-card ${selectedAccount === account.id ? 'selected' : ''}`}
+                        onClick={() => handleAccountChange(account.id)}
+                      >
+                        <div className="account-avatar">
+                          {account.profile_picture_url ? (
+                            <img src={account.profile_picture_url} alt={account.username} />
+                          ) : (
+                            <div className="avatar-placeholder">
+                              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                <circle cx="12" cy="7" r="4"/>
+                              </svg>
+                            </div>
+                          )}
+                        </div>
+                        <div className="account-info">
+                          <h3>@{account.username}</h3>
+                          <p>{account.name}</p>
+                          <div className="account-stats">
+                            <span>{account.followers_count} followers</span>
+                            <span>{account.media_count} posts</span>
+                          </div>
+                        </div>
+                        {selectedAccount === account.id && (
+                          <div className="selected-indicator">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <polyline points="20,6 9,17 4,12"/>
+                            </svg>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-          
-          {connectionStatus && (
-            <div className="connection-status">
-              <div className={`status-message ${connectionStatus.includes('✅') ? 'success' : connectionStatus.includes('🚧') ? 'info' : 'error'}`}>
-                {connectionStatus}
+          )}
+
+          {activeTab === 'post' && selectedAccount && (
+            <div className="post-section">
+              <div className="post-card">
+                <div className="post-header">
+                  <h2>Create Instagram Post</h2>
+                  <p>Create engaging content for your Instagram audience</p>
+                </div>
+
+
+
+                <div className="post-form">
+                  <div className="form-group">
+                    <label htmlFor="caption">Caption</label>
+                    <textarea
+                      id="caption"
+                      value={postContent}
+                      onChange={(e) => setPostContent(e.target.value)}
+                      placeholder="Write your Instagram caption..."
+                      rows="6"
+                      className="post-textarea"
+                    />
+                  </div>
+                  
+                  <div className="form-group">
+                    <label htmlFor="image">Image (Optional)</label>
+                    <div className="image-upload">
+                      <input
+                        id="image"
+                        type="file"
+                        accept="image/*"
+                        onChange={handleImageChange}
+                        className="file-input"
+                      />
+                      <label htmlFor="image" className="file-label">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                          <circle cx="9" cy="9" r="2"/>
+                          <path d="M21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                        </svg>
+                        {postImage ? postImage.name : 'Choose Image'}
+                      </label>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={handleCreatePost}
+                    disabled={loading || !postContent.trim()}
+                    className="publish-button"
+                  >
+                    {loading ? (
+                      <>
+                        <div className="button-spinner"></div>
+                        Publishing...
+                      </>
+                    ) : (
+                      <>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                        </svg>
+                        Publish Post
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           )}
-        </div>
 
-        {/* Backend Status Indicator */}
-        <div className="backend-status-footer">
-          <div className="backend-indicator">
-            <span className="status-dot"></span>
-            <span>Connected to FastAPI Backend</span>
-          </div>
+          {activeTab === 'media' && selectedAccount && (
+            <div className="media-section">
+              <div className="media-header">
+                <h2>Recent Posts</h2>
+                <p>Your latest Instagram content</p>
+              </div>
+              
+              {loadingMedia ? (
+                <div className="loading-media">
+                  <div className="loading-spinner"></div>
+                  <p>Loading media...</p>
+                </div>
+              ) : userMedia.length > 0 ? (
+                <div className="media-grid">
+                  {userMedia.slice(0, 12).map((media) => (
+                    <div key={media.id} className="media-item">
+                      <div className="media-content">
+                        {media.media_type === 'IMAGE' ? (
+                          <img src={media.media_url} alt="Instagram post" />
+                        ) : media.media_type === 'VIDEO' ? (
+                          <video controls>
+                            <source src={media.media_url} type="video/mp4" />
+                          </video>
+                        ) : null}
+                      </div>
+                      <div className="media-overlay">
+                        <div className="media-info">
+                          <p className="media-caption">
+                            {media.caption ? media.caption.substring(0, 100) + '...' : 'No caption'}
+                          </p>
+                          <p className="media-date">
+                            {new Date(media.timestamp).toLocaleDateString()}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="no-media">
+                  <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                    <circle cx="9" cy="9" r="2"/>
+                    <path d="M21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                  </svg>
+                  <h3>No Media Found</h3>
+                  <p>No media found for this account. Start creating posts to see them here!</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
-      </main>
+      </div>
     </div>
   );
-}
+};
 
 export default InstagramPage; 
